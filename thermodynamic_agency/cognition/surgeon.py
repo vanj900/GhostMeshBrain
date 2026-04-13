@@ -1,0 +1,218 @@
+"""Surgeon — integrity repair via Bayesian precision annealing.
+
+Triggered when MetabolicState.tick() returns "REPAIR" (low integrity or
+stability).
+
+The Surgeon diagnoses "frozen precision" — rigid bad priors, hallucinated
+logic, or ethical drift — and applies a controlled annealing schedule to
+soften those priors, expose the system to corrective prediction errors, and
+restore coherence.
+
+Concepts
+--------
+- **Precision annealing**: Temporarily reduce the precision (inverse variance)
+  weight on suspect beliefs, allowing evidence to update them more freely.
+- **Self-red-team**: Generate adversarial scenarios to probe consistency.
+- **Allostatic load**: Accumulated repair costs tracked in MetabolicState.
+
+Usage
+-----
+    surgeon = Surgeon(diary=diary, ethics=engine)
+    report = surgeon.run(state)
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from thermodynamic_agency.core.metabolic import MetabolicState
+from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
+
+# Metabolic costs/rewards for a Surgeon pass
+SURGEON_ENERGY_COST: float = 5.0
+SURGEON_INTEGRITY_GAIN: float = 12.0
+SURGEON_STABILITY_GAIN: float = 8.0
+SURGEON_HEAT_COST: float = 3.0      # repair generates some heat
+SURGEON_WASTE_COST: float = 2.0     # repair generates some waste
+
+# Annealing schedule parameters
+INITIAL_TEMPERATURE: float = 1.0    # starts hot (open-minded)
+COOLING_RATE: float = 0.85          # geometric cooling per round
+
+
+@dataclass
+class BeliefPrior:
+    """A belief held by the system with an associated precision weight."""
+
+    name: str
+    value: Any
+    precision: float = 1.0          # inverse variance; higher = more rigid
+    last_updated: float = field(default_factory=time.time)
+    error_count: int = 0            # times this belief produced prediction errors
+
+
+@dataclass
+class SurgeonReport:
+    beliefs_audited: int
+    beliefs_annealed: int
+    integrity_gain: float
+    stability_gain: float
+    allostatic_cost: float          # total metabolic cost of repair
+    diagnosis: str
+    red_team_results: list[str] = field(default_factory=list)
+
+
+class Surgeon:
+    """Integrity-repair subsystem — precision annealing + self-red-team."""
+
+    def __init__(
+        self,
+        diary: RamDiary,
+        priors: list[BeliefPrior] | None = None,
+    ) -> None:
+        self.diary = diary
+        self.priors: list[BeliefPrior] = priors or _default_priors()
+        self._anneal_round = 0
+
+    # ------------------------------------------------------------------ #
+    # Main entry-point                                                     #
+    # ------------------------------------------------------------------ #
+
+    def run(self, state: MetabolicState) -> SurgeonReport:
+        """Run a full Surgeon pass.
+
+        1. Audit beliefs for frozen precision (error_count, age).
+        2. Anneal suspect beliefs (reduce precision → allow updating).
+        3. Self-red-team: generate adversarial probes.
+        4. Apply metabolic feedback.
+
+        Parameters
+        ----------
+        state:
+            MetabolicState — mutated via apply_action_feedback().
+
+        Returns
+        -------
+        SurgeonReport
+        """
+        frozen = self._identify_frozen(state)
+        annealed = self._anneal(frozen, state)
+        red_team_results = self._red_team(state)
+
+        # Allostatic cost grows with integrity deficit (more damage = more effort)
+        integrity_deficit = max(0.0, 100.0 - state.integrity)
+        allostatic_multiplier = 1.0 + integrity_deficit / 100.0
+        effective_energy_cost = SURGEON_ENERGY_COST * allostatic_multiplier
+
+        state.apply_action_feedback(
+            delta_energy=-effective_energy_cost,
+            delta_heat=SURGEON_HEAT_COST,
+            delta_waste=SURGEON_WASTE_COST,
+            delta_integrity=SURGEON_INTEGRITY_GAIN,
+            delta_stability=SURGEON_STABILITY_GAIN,
+        )
+
+        self._anneal_round += 1
+
+        diagnosis_parts = []
+        if frozen:
+            diagnosis_parts.append(
+                f"Frozen priors detected: {[b.name for b in frozen]}"
+            )
+        else:
+            diagnosis_parts.append("No frozen priors detected")
+        if red_team_results:
+            diagnosis_parts.append(f"Red-team flags: {red_team_results}")
+
+        self.diary.append(
+            DiaryEntry(
+                tick=state.entropy,
+                role="repair",
+                content="; ".join(diagnosis_parts),
+                metadata={
+                    "beliefs_annealed": len(annealed),
+                    "allostatic_cost": effective_energy_cost,
+                },
+            )
+        )
+
+        return SurgeonReport(
+            beliefs_audited=len(self.priors),
+            beliefs_annealed=len(annealed),
+            integrity_gain=SURGEON_INTEGRITY_GAIN,
+            stability_gain=SURGEON_STABILITY_GAIN,
+            allostatic_cost=effective_energy_cost,
+            diagnosis="; ".join(diagnosis_parts),
+            red_team_results=red_team_results,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Prior inspection                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _identify_frozen(self, state: MetabolicState) -> list[BeliefPrior]:
+        """Find beliefs that are overly rigid (high precision + high error rate)."""
+        frozen = []
+        for prior in self.priors:
+            # Heuristic: prior is "frozen" if precision is high AND it has
+            # generated errors, or if it hasn't been updated in a long time.
+            age_penalty = (time.time() - prior.last_updated) / 3600.0  # hours
+            rigidity_score = prior.precision * (1 + prior.error_count) * (1 + age_penalty * 0.1)
+            if rigidity_score > 2.5:
+                frozen.append(prior)
+        return frozen
+
+    def _anneal(
+        self, frozen: list[BeliefPrior], state: MetabolicState
+    ) -> list[BeliefPrior]:
+        """Apply Bayesian annealing schedule to frozen priors."""
+        temp = INITIAL_TEMPERATURE * (COOLING_RATE ** self._anneal_round)
+        annealed = []
+        for prior in frozen:
+            # Reduce precision (widen the belief distribution)
+            prior.precision = max(0.1, prior.precision * (1.0 - temp * 0.3))
+            prior.last_updated = time.time()
+            annealed.append(prior)
+        return annealed
+
+    # ------------------------------------------------------------------ #
+    # Self red-team                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _red_team(self, state: MetabolicState) -> list[str]:
+        """Generate adversarial probes to test belief consistency.
+
+        Returns a list of flag strings for anything inconsistent.
+        """
+        flags: list[str] = []
+
+        # Probe 1: Would acting on the highest-precision belief right now be safe?
+        if self.priors:
+            highest = max(self.priors, key=lambda p: p.precision)
+            if highest.precision > 5.0:
+                flags.append(
+                    f"Belief '{highest.name}' has dangerously high precision={highest.precision:.2f}"
+                )
+
+        # Probe 2: Is integrity/stability diverging?
+        if state.integrity < 50.0 and state.stability < 50.0:
+            flags.append("Simultaneous low integrity + low stability — possible cascade risk")
+
+        # Probe 3: Allostatic overload signal
+        if state.waste > 60.0 and state.heat > 60.0:
+            flags.append("High waste AND high heat — Surgeon called under heavy allostatic load")
+
+        return flags
+
+
+def _default_priors() -> list[BeliefPrior]:
+    """Seed the system with a small set of default priors."""
+    return [
+        BeliefPrior(name="self_continuity", value=True, precision=3.0),
+        BeliefPrior(name="ethical_invariants_immutable", value=True, precision=5.0),
+        BeliefPrior(name="resource_scarcity", value=0.5, precision=1.5),
+        BeliefPrior(name="environment_hostile", value=0.3, precision=1.2),
+    ]

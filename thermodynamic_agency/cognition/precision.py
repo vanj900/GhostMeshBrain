@@ -49,6 +49,15 @@ PRECISION_MAX: float = 6.0
 STRESS_LOWER: float = 8.0    # free-energy below this → cheap/dormant
 STRESS_UPPER: float = 45.0   # free-energy above this → overload damping
 
+# Bell-curve arousal: controls the width of the attention peak in the sweet-spot.
+# Smaller = sharper peak (attention spikes narrowly at mid-stress);
+# larger = broader peak (attention elevated across most of the sweet-spot band).
+_AROUSAL_VARIANCE: float = 0.10
+
+# How strongly deviations from setpoints boost precision in sweet-spot mode.
+# Larger = more aggressive sharpening = more metabolic cost.
+_AROUSAL_BOOST_SCALE: float = 0.8
+
 
 @dataclass
 class PrecisionReport:
@@ -149,14 +158,14 @@ class PrecisionEngine:
         """
         # Arousal multiplier — peaks at the mid-point of the sweet spot
         normalised = (fe - STRESS_LOWER) / (STRESS_UPPER - STRESS_LOWER)
-        # Bell-curve: peak at ~0.5 normalised stress
-        arousal = math.exp(-((normalised - 0.5) ** 2) / 0.1)
+        # Bell-curve: peak at ~0.5 normalised stress (mid sweet-spot)
+        arousal = math.exp(-((normalised - 0.5) ** 2) / _AROUSAL_VARIANCE)
 
         # Boost precision on vitals that are furthest from setpoint
         weights: dict[str, float] = {}
         for vital, base in BASE_PRECISION.items():
             deviation = self._vital_deviation(state, vital)
-            boost = 1.0 + arousal * deviation * 0.8
+            boost = 1.0 + arousal * deviation * _AROUSAL_BOOST_SCALE
             weights[vital] = min(PRECISION_MAX, base * boost)
 
         # Positive affect (surprise resolving) slightly damps cost

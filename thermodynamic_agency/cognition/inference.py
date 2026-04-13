@@ -179,6 +179,17 @@ def compute_efe(
 # GHOST_COMPUTE_LOAD default — overridden by env var in pulse.py
 _DEFAULT_COMPUTE_LOAD: float = 1.0
 
+# Inference cost calibration constants.
+# These are tuned so that a 5-proposal DECIDE step at compute_load=1.0 costs
+# ~0.13–0.15 energy and ~0.02–0.03 heat — roughly 1.1–1.25× the passive
+# metabolic decay rate (0.12 E/tick), making cognitive work meaningfully
+# expensive without causing rapid death.
+_COST_KL_SCALE: float = 0.003       # energy cost per unit of mean delta magnitude
+_COST_DEPTH_ENERGY: float = 0.004   # energy cost per proposal evaluated
+_COST_BASE_ENERGY: float = 0.05     # fixed energy overhead per inference pass
+_COST_PRECISION_HEAT: float = 0.008 # heat cost per unit of mean precision
+_COST_DEPTH_HEAT: float = 0.002     # heat cost per proposal evaluated
+
 
 def compute_inference_cost(
     proposals: list[ActionProposal],
@@ -222,15 +233,14 @@ def compute_inference_cost(
 
     # Energy cost: base + KL proxy + per-proposal depth cost
     # Calibrated: 5 proposals, mean_delta≈22 → ~0.15 energy at load=1
-    kl_cost = mean_delta_magnitude * 0.003
-    depth_cost = n * 0.004
-    base_energy = 0.05
-    energy_cost = compute_load * (base_energy + kl_cost + depth_cost)
+    kl_cost = mean_delta_magnitude * _COST_KL_SCALE
+    depth_cost = n * _COST_DEPTH_ENERGY
+    energy_cost = compute_load * (_COST_BASE_ENERGY + kl_cost + depth_cost)
 
     # Heat cost: reflects precision sharpening work
     # Calibrated: mean_precision≈1.5, 5 props → ~0.03 heat at load=1
-    precision_tax = mean_precision * 0.008
-    heat_cost = compute_load * (precision_tax + n * 0.002)
+    precision_tax = mean_precision * _COST_PRECISION_HEAT
+    heat_cost = compute_load * (precision_tax + n * _COST_DEPTH_HEAT)
 
     return InferenceCost(
         energy_cost=energy_cost,

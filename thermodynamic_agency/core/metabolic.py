@@ -93,7 +93,7 @@ class MetabolicState:
             + 1.8 * max(0.0, 85.0 - self.integrity) / 85.0      # low integrity is surprising
             + 1.4 * max(0.0, 80.0 - self.stability) / 80.0      # low stability is surprising
         )
-        # Normalise to 0-100 scale (sum of weights = 7.7)
+        # Normalise to 0-100 scale (weights sum: 2.0+1.5+1.0+1.8+1.4 = 7.7)
         return deviations / 7.7 * 100.0
 
     def tick(self, compute_load: float = 1.0) -> ActionToken:

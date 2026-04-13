@@ -30,6 +30,14 @@ JANITOR_ENERGY_COST: float = float(os.environ.get("JANITOR_ENERGY_COST", "4"))
 OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "mistral")
 
+# LLM prompt complexity cost coefficients.
+# Longer / more detailed prompts burn more metabolic resources, forcing the
+# system to prefer efficient summarisation over exhaustive context dumping.
+# Calibrated: 500-char prompt → +0.40 energy, +0.20 heat on top of base cost;
+#             2000-char prompt → +1.60 energy, +0.80 heat.
+LLM_ENERGY_COST_PER_CHAR: float = float(os.environ.get("JANITOR_LLM_E_PER_CHAR", "0.0008"))
+LLM_HEAT_COST_PER_CHAR: float = float(os.environ.get("JANITOR_LLM_H_PER_CHAR", "0.0004"))
+
 
 @dataclass
 class JanitorReport:
@@ -164,8 +172,8 @@ class Janitor:
         # Calibrated: 500 chars ≈ +0.40 energy, +0.20 heat (on top of base cost).
         # 2000 chars ≈ +1.60 energy, +0.80 heat — genuinely expensive.
         prompt_chars = len(prompt)
-        llm_energy_cost = prompt_chars * 0.0008
-        llm_heat_cost = prompt_chars * 0.0004
+        llm_energy_cost = prompt_chars * LLM_ENERGY_COST_PER_CHAR
+        llm_heat_cost = prompt_chars * LLM_HEAT_COST_PER_CHAR
         # This is stored so _compress can pass it back via run(); charge inline
         # via a dedicated callback stored on the instance during this call.
         self._pending_llm_cost = (llm_energy_cost, llm_heat_cost)

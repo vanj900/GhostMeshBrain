@@ -47,6 +47,8 @@ class Janitor:
     def __init__(self, diary: RamDiary, use_llm: bool = False) -> None:
         self.diary = diary
         self.use_llm = use_llm
+        # Populated by _compress_via_llm so run() can apply the LLM cost
+        self._pending_llm_cost: tuple[float, float] = (0.0, 0.0)
 
     # ------------------------------------------------------------------ #
     # Main entry-point                                                     #
@@ -66,6 +68,8 @@ class Janitor:
         -------
         JanitorReport
         """
+        # Reset pending LLM cost each run
+        self._pending_llm_cost = (0.0, 0.0)
         entries = self.diary.recent(compress_last_n)
         if not entries:
             return JanitorReport(
@@ -92,11 +96,12 @@ class Janitor:
         # Wipe compressed entries (keep any after the last compressed id)
         self._wipe_range(first_id, last_id)
 
-        # Apply metabolic feedback
-        delta_energy = -JANITOR_ENERGY_COST
+        # Apply metabolic feedback — base cost plus any LLM prompt cost
+        llm_energy_cost, llm_heat_cost = self._pending_llm_cost
+        delta_energy = -JANITOR_ENERGY_COST - llm_energy_cost
         state.apply_action_feedback(
             delta_energy=delta_energy,
-            delta_heat=JANITOR_HEAT_REDUCTION,
+            delta_heat=JANITOR_HEAT_REDUCTION + llm_heat_cost,
             delta_waste=JANITOR_WASTE_REDUCTION,
             delta_integrity=1.5,
         )
@@ -139,7 +144,13 @@ class Janitor:
         return insights[:10]  # cap at 10 insights
 
     def _compress_via_llm(self, entries: list[DiaryEntry]) -> list[str]:
-        """Summarise via Ollama local LLM."""
+        """Summarise via Ollama local LLM.
+
+        The prompt length is a proxy for computational complexity — longer
+        prompts burn more energy and generate more heat.  This cost is charged
+        to the metabolic state *before* the result is applied so that the
+        organism truly pays for expensive summarisation.
+        """
         text = "\n".join(
             f"[{e.role}] {e.content}" for e in entries
         )
@@ -148,6 +159,17 @@ class Janitor:
             "Summarise the following diary entries into 5-10 concise insight bullets "
             "(each on its own line, starting with a dash):\n\n" + text
         )
+
+        # Charge metabolic cost proportional to prompt complexity.
+        # Calibrated: 500 chars ≈ +0.40 energy, +0.20 heat (on top of base cost).
+        # 2000 chars ≈ +1.60 energy, +0.80 heat — genuinely expensive.
+        prompt_chars = len(prompt)
+        llm_energy_cost = prompt_chars * 0.0008
+        llm_heat_cost = prompt_chars * 0.0004
+        # This is stored so _compress can pass it back via run(); charge inline
+        # via a dedicated callback stored on the instance during this call.
+        self._pending_llm_cost = (llm_energy_cost, llm_heat_cost)
+
         payload = json.dumps(
             {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
         ).encode()

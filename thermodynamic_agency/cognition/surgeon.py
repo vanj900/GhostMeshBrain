@@ -30,6 +30,7 @@ from typing import Any
 
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
+from thermodynamic_agency.cognition.precision import PrecisionEngine
 
 # Metabolic costs/rewards for a Surgeon pass
 SURGEON_ENERGY_COST: float = 5.0
@@ -76,6 +77,7 @@ class Surgeon:
         self.diary = diary
         self.priors: list[BeliefPrior] = priors or _default_priors()
         self._anneal_round = 0
+        self._precision_engine = PrecisionEngine()
 
     # ------------------------------------------------------------------ #
     # Main entry-point                                                     #
@@ -84,10 +86,11 @@ class Surgeon:
     def run(self, state: MetabolicState) -> SurgeonReport:
         """Run a full Surgeon pass.
 
-        1. Audit beliefs for frozen precision (error_count, age).
-        2. Anneal suspect beliefs (reduce precision → allow updating).
-        3. Self-red-team: generate adversarial probes.
-        4. Apply metabolic feedback.
+        1. Tune precision weights via PrecisionEngine (know where to look).
+        2. Audit beliefs for frozen precision (error_count, age).
+        3. Anneal suspect beliefs with precision-scaled temperature.
+        4. Self-red-team: generate adversarial probes.
+        5. Apply metabolic feedback — higher precision sharpening costs more.
 
         Parameters
         ----------
@@ -98,18 +101,26 @@ class Surgeon:
         -------
         SurgeonReport
         """
+        # Step 1: Query precision engine — tells us where surprise is highest
+        # and what it costs to sharpen attention right now.
+        precision_report = self._precision_engine.tune(state)
+
         frozen = self._identify_frozen(state)
-        annealed = self._anneal(frozen, state)
+        annealed = self._anneal(frozen, state, precision_report.weights)
         red_team_results = self._red_team(state)
 
         # Allostatic cost grows with integrity deficit (more damage = more effort)
         integrity_deficit = max(0.0, 100.0 - state.integrity)
         allostatic_multiplier = 1.0 + integrity_deficit / 100.0
-        effective_energy_cost = SURGEON_ENERGY_COST * allostatic_multiplier
+
+        # Precision sharpening surcharge: sweet-spot costs more because
+        # we're doing real epistemic work (tightening beliefs takes energy).
+        precision_surcharge = precision_report.energy_cost
+        effective_energy_cost = SURGEON_ENERGY_COST * allostatic_multiplier + precision_surcharge
 
         state.apply_action_feedback(
             delta_energy=-effective_energy_cost,
-            delta_heat=SURGEON_HEAT_COST,
+            delta_heat=SURGEON_HEAT_COST + precision_report.heat_cost,
             delta_waste=SURGEON_WASTE_COST,
             delta_integrity=SURGEON_INTEGRITY_GAIN,
             delta_stability=SURGEON_STABILITY_GAIN,
@@ -127,6 +138,17 @@ class Surgeon:
         if red_team_results:
             diagnosis_parts.append(f"Red-team flags: {red_team_results}")
 
+        # Affect signal gives insight into current surprise gradient
+        affect_label = (
+            "resolving" if state.affect > 0.1
+            else "stressed" if state.affect < -0.1
+            else "neutral"
+        )
+        diagnosis_parts.append(
+            f"Affect={state.affect:.3f} ({affect_label}), "
+            f"FE={precision_report.free_energy:.1f} [{precision_report.regime}]"
+        )
+
         self.diary.append(
             DiaryEntry(
                 tick=state.entropy,
@@ -135,6 +157,8 @@ class Surgeon:
                 metadata={
                     "beliefs_annealed": len(annealed),
                     "allostatic_cost": effective_energy_cost,
+                    "precision_regime": precision_report.regime,
+                    "affect": state.affect,
                 },
             )
         )
@@ -166,13 +190,25 @@ class Surgeon:
         return frozen
 
     def _anneal(
-        self, frozen: list[BeliefPrior], state: MetabolicState
+        self, frozen: list[BeliefPrior], state: MetabolicState,
+        precision_weights: dict[str, float] | None = None,
     ) -> list[BeliefPrior]:
-        """Apply Bayesian annealing schedule to frozen priors."""
+        """Apply Bayesian annealing schedule to frozen priors.
+
+        When precision weights are elevated (sweet-spot arousal), the
+        annealing temperature is slightly boosted so beliefs loosen more
+        aggressively — the organism is paying for sharper updating.
+        """
         temp = INITIAL_TEMPERATURE * (COOLING_RATE ** self._anneal_round)
+
+        # Precision-aware boost: higher mean precision → hotter annealing
+        if precision_weights:
+            mean_p = sum(precision_weights.values()) / len(precision_weights)
+            # Base precision ≈ 1.54; normalise so boost is proportional to elevation
+            temp *= max(1.0, mean_p / 1.54)
+
         annealed = []
         for prior in frozen:
-            # Reduce precision (widen the belief distribution)
             prior.precision = max(0.1, prior.precision * (1.0 - temp * 0.3))
             prior.last_updated = time.time()
             annealed.append(prior)

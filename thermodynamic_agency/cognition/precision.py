@@ -46,8 +46,8 @@ PRECISION_MAX: float = 6.0
 # Metabolic thresholds that define the "sweet spot" band
 # Below lower bound → dormant (too cold, cheap predictions)
 # Above upper bound → overload (too hot, risk of collapse)
-STRESS_LOWER: float = 15.0   # free-energy below this → cheap/dormant
-STRESS_UPPER: float = 55.0   # free-energy above this → overload damping
+STRESS_LOWER: float = 8.0    # free-energy below this → cheap/dormant
+STRESS_UPPER: float = 45.0   # free-energy above this → overload damping
 
 
 @dataclass

@@ -45,7 +45,7 @@ fi
 # ── Module check ─────────────────────────────────────────────────────────────
 if ! $GHOST_PYTHON -c "import thermodynamic_agency" 2>/dev/null; then
     _log "ERROR: thermodynamic_agency package not found."
-    _log "       Install with: pip install -e /path/to/AGI"
+    _log "       Install with: pip install -e ."
     exit 1
 fi
 

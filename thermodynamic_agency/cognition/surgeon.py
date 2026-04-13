@@ -120,7 +120,7 @@ class Surgeon:
         diagnosis_parts = []
         if frozen:
             diagnosis_parts.append(
-                f"Froze priors detected: {[b.name for b in frozen]}"
+                f"Frozen priors detected: {[b.name for b in frozen]}"
             )
         else:
             diagnosis_parts.append("No frozen priors detected")

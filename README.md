@@ -51,11 +51,11 @@ from executed actions (`apply_action_feedback()`).
 Surprise is tracked as a scalar proxy computed in `free_energy_estimate()`:
 
 ```
-FE = ( 2.0 · max(0, 80 − E)/80
-     + 1.5 · max(0, T − 20)/80
-     + 1.0 · max(0, W − 10)/90
-     + 1.8 · max(0, 85 − M)/85
-     + 1.4 · max(0, 80 − S)/80 ) / 7.7 × 100
+FE = ( 2.0 * max(0, 80 - E)/80
+     + 1.5 * max(0, T - 20)/80
+     + 1.0 * max(0, W - 10)/90
+     + 1.8 * max(0, 85 - M)/85
+     + 1.4 * max(0, 80 - S)/80 ) / 7.7 * 100
 ```
 
 This is a precision-weighted sum of per-vital deviations from setpoints,
@@ -65,7 +65,7 @@ surprising (stressful) state.
 **Affect** is the negative rate-of-change of free energy:
 
 ```
-affect = –ΔFE / (1 + |ΔFE|)   ∈ [−1, +1]
+affect = -dFE / (1 + |dFE|)   in [-1, +1]
 ```
 
 Positive affect signals surprise resolving (pleasure); negative signals
@@ -78,9 +78,9 @@ At each `DECIDE` step, candidate actions are evaluated by `compute_efe()`:
 ```
 EFE = accuracy + complexity + death_penalty
 
-accuracy  = Σᵢ ωᵢ · (post_vitalᵢ − setpointᵢ)²
-complexity = Σᵢ |Δᵢ| · 0.05
-death_penalty = Σ max(0, 5 − margin_to_death_threshold) · 50
+accuracy  = sum_i( w_i * (post_vital_i - setpoint_i)^2 )
+complexity = sum_i( |delta_i| * 0.05 )
+death_penalty = sum( max(0, 5 - margin_to_death_threshold) * 50 )
 ```
 
 The action with the **lowest EFE is selected** — the organism picks the
@@ -92,8 +92,8 @@ The **metabolic cost of inference itself** is also charged before the
 winning action executes:
 
 ```
-energy_cost ≈ 0.05 + (mean_|Δ| · 0.003) + (n_proposals · 0.004)
-heat_cost   ≈ (mean_precision · 0.008) + (n_proposals · 0.002)
+energy_cost ≈ 0.05 + (mean_delta * 0.003) + (n_proposals * 0.004)
+heat_cost   ≈ (mean_precision * 0.008) + (n_proposals * 0.002)
 ```
 
 At `compute_load=1.0` with five proposals this is ~0.15 energy and ~0.03
@@ -159,8 +159,8 @@ suspect.
    overly rigid priors and `_anneal()` applies a geometric cooling schedule:
 
    ```
-   new_precision = max(0.1, precision × (1 − T × 0.3))
-   T = T₀ × 0.85^round   (T₀ = 1.0)
+   new_precision = max(0.1, precision * (1 - T * 0.3))
+   T = T0 * 0.85^round   (T0 = 1.0)
    ```
 
    Beliefs are softened, not deleted — the organism becomes more open to
@@ -187,11 +187,11 @@ differential equations applied every tick (`compute_load` = 1.0 unless
 overridden):
 
 ```
-ΔE  = −load × 0.12                          (starvation)
-ΔT  = +load × 0.1 × (1 + W/50)             (waste exacerbates heat)
-ΔM  = M × −(T/120) × load × 0.01           (heat degrades integrity)
-ΔS  = −load × 0.05                          (entropic drift)
-ΔW  = +0.018 × load                         (residual prediction error)
+dE  = -load * 0.12                          (starvation)
+dT  = +load * 0.1 * (1 + W/50)             (waste exacerbates heat)
+dM  = M * -(T/120) * load * 0.01           (heat degrades integrity)
+dS  = -load * 0.05                          (entropic drift)
+dW  = +0.018 * load                         (residual prediction error)
 ```
 
 These are **non-linear and coupled**: elevated waste accelerates heating;

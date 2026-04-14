@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-"""GhostMesh stress test runner.
+"""stress_test.py — GhostMesh long-run stress tester.
 
-Runs the organism for N ticks with configurable compute load and stochastic
-environmental surprises, then prints a statistical summary.  Optionally
-writes a JSONL run log for analysis with ``analyze_run.py``.
+Runs one or more simulation sessions back-to-back with configurable
+compute load and logs every tick's vital signs to a JSONL file for
+later analysis or plotting.
 
 Usage
 -----
-    # Quick 500-tick run with default settings
+    # 2000-tick run at default load, logs to /tmp/ghost_runs/vitals_cl1.0.jsonl
     python examples/stress_test.py
 
-    # 2000-tick harsh environment run, log to file
-    python examples/stress_test.py --ticks 2000 --load 1.5 \\
-        --stressor-prob 0.08 --stressor-intensity 1.2 \\
-        --log-file /tmp/ghost_run.jsonl
+    # 5000-tick run at elevated load 1.8
+    python examples/stress_test.py --ticks 5000 --compute-load 1.8
 
-    # Reproducible run (fixed seed), no HUD output
-    python examples/stress_test.py --ticks 5000 --seed 42 --no-hud \\
-        --log-file /tmp/ghost_long.jsonl
+    # Three sessions with varied loads, save to a named output dir
+    python examples/stress_test.py --multi --output-dir /tmp/ghost_runs
 
-Environment Variables (override CLI flags)
-------------------------------------------
-GHOST_COMPUTE_LOAD, GHOST_STRESSOR_PROB, GHOST_STRESSOR_INTENSITY,
-GHOST_STRESSOR_SEED, GHOST_LOG_FILE, GHOST_HUD — same semantics as
-described in the main README.
+    # Disable environmental events (flat world)
+    python examples/stress_test.py --no-env-events --ticks 1000
+
+    # Suppress per-tick HUD output for faster headless runs
+    python examples/stress_test.py --no-hud --ticks 5000 --output-dir /tmp/runs
+
+Output
+------
+Each session writes a JSONL file (one JSON record per tick) plus a
+human-readable summary table to stdout.  If matplotlib is installed,
+``--plot`` generates a PNG vitals chart.
 """
 
 from __future__ import annotations
@@ -32,155 +35,273 @@ import argparse
 import json
 import os
 import sys
-import tempfile
+import time
+from pathlib import Path
 
-# Allow running directly without installing the package
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Allow running from repo root without installing
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from thermodynamic_agency.core.exceptions import GhostDeathException  # noqa: F401
-from thermodynamic_agency.pulse import GhostMesh
+# Silence HUD and state-file writes during stress tests by default
+os.environ.setdefault("GHOST_HUD", "0")
 
 
-def _print_summary(summary: dict) -> None:
+def _run_session(
+    *,
+    ticks: int,
+    compute_load: float,
+    log_path: str,
+    env_events: bool,
+    seed: int | None,
+    state_file: str,
+    diary_path: str,
+    no_hud: bool,
+) -> dict:
+    """Run one simulation session and return a summary dict."""
+    import os
+
+    os.environ["GHOST_COMPUTE_LOAD"] = str(compute_load)
+    os.environ["GHOST_VITALS_LOG"] = log_path
+    os.environ["GHOST_ENV_EVENTS"] = "1" if env_events else "0"
+    os.environ["GHOST_STATE_FILE"] = state_file
+    os.environ["GHOST_DIARY_PATH"] = diary_path
+    os.environ["GHOST_HUD"] = "0" if no_hud else os.environ.get("GHOST_HUD", "0")
+    # No sleep between ticks in stress mode
+    os.environ["GHOST_PULSE"] = "0"
+
+    from thermodynamic_agency.pulse import GhostMesh
+
+    mesh = GhostMesh(seed=seed)
+    t0 = time.perf_counter()
+    mesh.run(max_ticks=ticks)
+    elapsed = time.perf_counter() - t0
+
+    # Parse log to produce summary stats
+    records = []
+    if os.path.exists(log_path):
+        with open(log_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+
+    summary = _summarise(records, compute_load, elapsed, mesh.state)
+    return summary
+
+
+def _summarise(records: list[dict], compute_load: float, elapsed: float, final_state) -> dict:
+    """Compute summary statistics from a list of per-tick records."""
+    if not records:
+        return {"error": "no records"}
+
+    ticks = len(records)
+    actions = [r["action"] for r in records]
+    events = [r.get("env_event", "none") for r in records]
+    masks = [r.get("mask", "?") for r in records]
+
+    def mean(key: str) -> float:
+        vals = [r[key] for r in records if key in r]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def count(lst: list, val: str) -> int:
+        return sum(1 for x in lst if x == val)
+
+    action_dist = {
+        a: count(actions, a) for a in ["FORAGE", "REST", "REPAIR", "DECIDE"]
+    }
+    event_dist: dict[str, int] = {}
+    for e in events:
+        event_dist[e] = event_dist.get(e, 0) + 1
+    mask_dist: dict[str, int] = {}
+    for m in masks:
+        mask_dist[m] = mask_dist.get(m, 0) + 1
+
+    # Near-death events: ticks where energy < 5 or heat > 95 or integrity < 20
+    near_death = sum(
+        1 for r in records
+        if r.get("energy", 100) < 5
+        or r.get("heat", 0) > 95
+        or r.get("integrity", 100) < 20
+        or r.get("stability", 100) < 5
+    )
+
+    final = records[-1]
+
+    return {
+        "ticks": ticks,
+        "compute_load": compute_load,
+        "elapsed_s": round(elapsed, 2),
+        "ticks_per_sec": round(ticks / elapsed, 1) if elapsed > 0 else 0,
+        "survived": True,  # if we got here, no death exception was fatal
+        "final_stage": final.get("stage", "?"),
+        "final_health": round(final.get("health", 0), 1),
+        "final_energy": round(final.get("energy", 0), 1),
+        "final_heat": round(final.get("heat", 0), 1),
+        "final_integrity": round(final.get("integrity", 0), 1),
+        "final_stability": round(final.get("stability", 0), 1),
+        "avg_energy": round(mean("energy"), 1),
+        "avg_heat": round(mean("heat"), 1),
+        "avg_waste": round(mean("waste"), 1),
+        "avg_integrity": round(mean("integrity"), 1),
+        "avg_stability": round(mean("stability"), 1),
+        "avg_affect": round(mean("affect"), 4),
+        "avg_free_energy": round(mean("free_energy"), 2),
+        "near_death_ticks": near_death,
+        "action_distribution": action_dist,
+        "event_distribution": event_dist,
+        "mask_distribution": mask_dist,
+    }
+
+
+def _print_summary(summary: dict, label: str) -> None:
     print(f"\n{'='*60}")
-    print("Run Summary")
+    print(f"  Session: {label}")
     print(f"{'='*60}")
-
-    print(f"  Total ticks  : {summary.get('total_ticks', '?')}")
-    print(f"  Final tick   : {summary.get('final_tick', '?')}")
-    print(f"  Final stage  : {summary.get('final_stage', '?')}")
-
-    action_dist = summary.get("action_distribution", {})
-    if action_dist:
-        n = summary["total_ticks"]
-        print("\n  Action Token Distribution:")
-        for action in ("DECIDE", "FORAGE", "REST", "REPAIR"):
-            count = action_dist.get(action, 0)
-            pct = count / n * 100 if n else 0.0
-            bar = "█" * int(pct / 2)
-            print(f"    {action:<8} {bar:<25} {count:5d}  ({pct:5.1f}%)")
-
-    mask_dist = summary.get("mask_distribution", {})
-    if mask_dist:
-        n = summary["total_ticks"]
-        print("\n  Personality Mask Distribution:")
-        for mask, count in sorted(mask_dist.items(), key=lambda x: -x[1]):
-            pct = count / n * 100 if n else 0.0
-            print(f"    {mask:<12} {count:5d}  ({pct:5.1f}%)")
-
-    regime_dist = summary.get("precision_regime_distribution", {})
-    if regime_dist:
-        n = summary["total_ticks"]
-        print("\n  Precision Regime Distribution:")
-        for regime, count in sorted(regime_dist.items()):
-            pct = count / n * 100 if n else 0.0
-            print(f"    {regime:<14} {count:5d}  ({pct:5.1f}%)")
-
-    for metric, label in (
-        ("affect",      "Affect (pleasure signal)"),
-        ("free_energy", "Free Energy (surprise)  "),
-        ("health",      "Health Score            "),
-    ):
-        d = summary.get(metric, {})
-        if d:
-            print(
-                f"\n  {label}: "
-                f"mean={d['mean']:+.3f}  "
-                f"min={d['min']:+.3f}  "
-                f"max={d['max']:+.3f}"
-            )
-
-    print(f"\n  Ethics blocks     : {summary.get('total_ethics_blocks', 0)}")
-    n_stressor = summary.get("total_stressor_events", 0)
-    n_total = summary.get("total_ticks", 0)
-    stressor_pct = n_stressor / n_total * 100 if n_total else 0.0
-    print(f"  Stressor events   : {n_stressor}  ({stressor_pct:.1f}% of ticks)")
-    print()
+    if "error" in summary:
+        print(f"  ERROR: {summary['error']}")
+        return
+    print(f"  Ticks          : {summary['ticks']} ({summary['ticks_per_sec']} ticks/s)")
+    print(f"  Compute load   : {summary['compute_load']}")
+    print(f"  Survived       : {summary['survived']}")
+    print(f"  Final stage    : {summary['final_stage']}")
+    print(f"  Final health   : {summary['final_health']}")
+    print(f"  Near-death tks : {summary['near_death_ticks']}")
+    print(f"\n  Vital averages over run:")
+    print(f"    Energy     {summary['avg_energy']:6.1f}  (final {summary['final_energy']:.1f})")
+    print(f"    Heat       {summary['avg_heat']:6.1f}  (final {summary['final_heat']:.1f})")
+    print(f"    Waste      {summary['avg_waste']:6.1f}")
+    print(f"    Integrity  {summary['avg_integrity']:6.1f}  (final {summary['final_integrity']:.1f})")
+    print(f"    Stability  {summary['avg_stability']:6.1f}  (final {summary['final_stability']:.1f})")
+    print(f"    Affect     {summary['avg_affect']:+.4f}")
+    print(f"    Free-E     {summary['avg_free_energy']:6.2f}")
+    print(f"\n  Action distribution:")
+    for a, n in sorted(summary["action_distribution"].items()):
+        pct = 100.0 * n / summary["ticks"] if summary["ticks"] else 0
+        print(f"    {a:<8} {n:>6}  ({pct:.1f}%)")
+    print(f"\n  Mask distribution:")
+    for m, n in sorted(summary["mask_distribution"].items(), key=lambda x: -x[1]):
+        pct = 100.0 * n / summary["ticks"] if summary["ticks"] else 0
+        print(f"    {m:<12} {n:>6}  ({pct:.1f}%)")
+    top_events = sorted(summary["event_distribution"].items(), key=lambda x: -x[1])[:5]
+    if top_events:
+        print(f"\n  Top env events (by frequency):")
+        for ev, n in top_events:
+            pct = 100.0 * n / summary["ticks"] if summary["ticks"] else 0
+            print(f"    {ev:<20} {n:>5}  ({pct:.1f}%)")
 
 
-def main(argv: list[str] | None = None) -> None:
+def _maybe_plot(log_path: str, output_path: str) -> None:
+    """Generate a vitals chart if matplotlib is available."""
+    try:
+        import matplotlib  # noqa: F401
+    except ImportError:
+        print(
+            "\n[plot] matplotlib not installed — skipping chart.\n"
+            "       Install with: pip install matplotlib"
+        )
+        return
+
+    # Delegate to plot_vitals.py if it exists alongside this script
+    plot_script = Path(__file__).parent / "plot_vitals.py"
+    if plot_script.exists():
+        import subprocess
+        subprocess.run(
+            [sys.executable, str(plot_script), log_path, "--output", output_path],
+            check=False,
+        )
+    else:
+        print(f"[plot] plot_vitals.py not found alongside stress_test.py")
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="GhostMesh stress test runner",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="GhostMesh stress tester — long-run vital sign logger."
     )
     parser.add_argument(
-        "--ticks", type=int, default=500,
-        help="Number of heartbeat ticks to run",
+        "--ticks", type=int, default=2000,
+        help="Number of ticks per session (default: 2000)",
     )
     parser.add_argument(
-        "--load", type=float, default=1.0,
-        help="GHOST_COMPUTE_LOAD — per-tick computational burden",
+        "--compute-load", type=float, default=1.0,
+        help="GHOST_COMPUTE_LOAD for the session (default: 1.0)",
     )
     parser.add_argument(
-        "--stressor-prob", type=float, default=0.05,
-        help="Probability of a random environmental disturbance per tick",
+        "--multi", action="store_true",
+        help=(
+            "Run multiple sessions with varied compute loads "
+            "(0.5, 1.0, 1.5, 2.0) — ignores --compute-load"
+        ),
     )
     parser.add_argument(
-        "--stressor-intensity", type=float, default=1.0,
-        help="Scale factor for disturbance magnitudes",
+        "--output-dir", type=str, default="/tmp/ghost_runs",
+        help="Directory for JSONL logs and plots (default: /tmp/ghost_runs)",
     )
     parser.add_argument(
-        "--log-file", type=str, default="",
-        help="Path to write JSONL run log (empty = no file log)",
+        "--no-env-events", action="store_true",
+        help="Disable stochastic environmental events (flat-world run)",
     )
     parser.add_argument(
         "--seed", type=int, default=None,
-        help="Random seed for reproducible stressor events",
+        help="Random seed for reproducible runs",
+    )
+    parser.add_argument(
+        "--plot", action="store_true",
+        help="Generate matplotlib vitals charts (requires matplotlib)",
     )
     parser.add_argument(
         "--no-hud", action="store_true",
-        help="Suppress per-tick HUD output (faster, cleaner logs)",
+        help="Suppress per-tick HUD output (faster headless runs)",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        state_file = os.path.join(tmpdir, "ghost_metabolic.json")
-        diary_path = os.path.join(tmpdir, "ghost_diary.db")
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        os.environ["GHOST_STATE_FILE"] = state_file
-        os.environ["GHOST_DIARY_PATH"] = diary_path
-        os.environ["GHOST_HUD"] = "0" if args.no_hud else "1"
-        os.environ["GHOST_PULSE"] = "0"          # no sleep between heartbeat ticks (run at full speed)
-        os.environ["GHOST_COMPUTE_LOAD"] = str(args.load)
-        os.environ["GHOST_STRESSOR_PROB"] = str(args.stressor_prob)
-        os.environ["GHOST_STRESSOR_INTENSITY"] = str(args.stressor_intensity)
-        if args.seed is not None:
-            os.environ["GHOST_STRESSOR_SEED"] = str(args.seed)
-        if args.log_file:
-            os.environ["GHOST_LOG_FILE"] = args.log_file
+    sessions: list[tuple[float, str]] = []  # (compute_load, label)
+    if args.multi:
+        for cl in [0.5, 1.0, 1.5, 2.0]:
+            sessions.append((cl, f"cl{cl}"))
+    else:
+        sessions.append((args.compute_load, f"cl{args.compute_load}"))
 
-        print(f"\n{'='*60}")
-        print("GhostMesh Stress Test")
-        print(f"  ticks={args.ticks}  load={args.load}  "
-              f"stressor_prob={args.stressor_prob}  "
-              f"intensity={args.stressor_intensity}")
-        if args.seed is not None:
-            print(f"  seed={args.seed}")
-        if args.log_file:
-            print(f"  log_file={args.log_file}")
-        print(f"{'='*60}\n")
+    summaries = []
+    for cl, label in sessions:
+        log_path = str(out_dir / f"vitals_{label}.jsonl")
+        state_file = str(out_dir / f"state_{label}.json")
+        diary_path = str(out_dir / f"diary_{label}.db")
 
-        mesh = GhostMesh()
-        try:
-            mesh.run(max_ticks=args.ticks)
-        except SystemExit:
-            pass  # natural death is expected in harsh environments
+        # Clean up any previous run artifacts
+        for p in [log_path, state_file, diary_path]:
+            if os.path.exists(p):
+                os.remove(p)
 
-        # Close logger and print summary
-        mesh.run_logger.close()
-        summary = mesh.run_logger.summary()
-        if summary:
-            _print_summary(summary)
-        else:
-            # Fallback: print final state directly
-            s = mesh.state
-            print(f"\nFinal tick: {s.entropy}  stage: {s.stage}  "
-                  f"health: {s.health_score():.1f}")
+        print(f"\n[stress_test] Starting session '{label}' — {args.ticks} ticks, "
+              f"compute_load={cl}, env_events={not args.no_env_events}")
 
-        if args.log_file:
-            print(f"Run log written to: {args.log_file}")
-            print("Analyze with:  python examples/analyze_run.py "
-                  f"{args.log_file}\n")
+        summary = _run_session(
+            ticks=args.ticks,
+            compute_load=cl,
+            log_path=log_path,
+            env_events=not args.no_env_events,
+            seed=args.seed,
+            state_file=state_file,
+            diary_path=diary_path,
+            no_hud=args.no_hud,
+        )
+        summary["label"] = label
+        summary["log_path"] = log_path
+        summaries.append(summary)
+        _print_summary(summary, label)
+
+        if args.plot:
+            plot_out = str(out_dir / f"vitals_{label}.png")
+            _maybe_plot(log_path, plot_out)
+
+    # Write combined summary JSON
+    summary_path = out_dir / "summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(summaries, fh, indent=2)
+    print(f"\n[stress_test] Summaries written to {summary_path}")
+    print(f"[stress_test] JSONL logs in {out_dir}")
 
 
 if __name__ == "__main__":

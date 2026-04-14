@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import signal
 import sys
 import time
 
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.core.exceptions import GhostDeathException
+from thermodynamic_agency.core.environment import sample_event
 from thermodynamic_agency.cognition.inference import (
     active_inference_step,
     generate_default_proposals,
@@ -41,18 +43,25 @@ DIARY_PATH = os.environ.get("GHOST_DIARY_PATH", "/dev/shm/ghost_diary.db")
 PULSE_SECONDS = float(os.environ.get("GHOST_PULSE", "5"))
 COMPUTE_LOAD = float(os.environ.get("GHOST_COMPUTE_LOAD", "1.0"))
 SHOW_HUD = os.environ.get("GHOST_HUD", "1") == "1"
+# Optional path for per-tick vitals JSONL log (empty string = disabled)
+VITALS_LOG = os.environ.get("GHOST_VITALS_LOG", "")
+# Whether to inject stochastic environmental events (default: enabled)
+ENABLE_ENV_EVENTS = os.environ.get("GHOST_ENV_EVENTS", "1") == "1"
 
 
 class GhostMesh:
     """The full thermodynamic organism."""
 
-    def __init__(self) -> None:
+    def __init__(self, seed: int | None = None) -> None:
         # Re-read env vars at construction time so tests/callers can override them.
         self._state_file = os.environ.get("GHOST_STATE_FILE", STATE_FILE)
         self._diary_path = os.environ.get("GHOST_DIARY_PATH", DIARY_PATH)
         self._pulse_seconds = float(os.environ.get("GHOST_PULSE", str(PULSE_SECONDS)))
         self._compute_load = float(os.environ.get("GHOST_COMPUTE_LOAD", str(COMPUTE_LOAD)))
         self._show_hud = os.environ.get("GHOST_HUD", "1") == "1"
+        self._vitals_log = os.environ.get("GHOST_VITALS_LOG", VITALS_LOG)
+        self._env_events = os.environ.get("GHOST_ENV_EVENTS", "1") == "1"
+        self._rng = random.Random(seed)  # seeded for reproducibility
         # Load or initialise metabolic state
         self.state = self._load_state()
         self.diary = RamDiary(path=self._diary_path)
@@ -62,6 +71,8 @@ class GhostMesh:
         self.rotator = MaskRotator(initial_mask="Guardian")
         self.precision_engine = PrecisionEngine()
         self._running = False
+        # Vitals log file handle (opened lazily on first write)
+        self._vitals_fh = None
 
         # Optional stochastic environment stressor
         _stressor_prob = float(os.environ.get("GHOST_STRESSOR_PROB", "0.0"))
@@ -112,17 +123,20 @@ class GhostMesh:
             )
         )
 
-        while self._running:
-            if max_ticks is not None and ticks >= max_ticks:
-                break
-            try:
-                self._pulse()
-            except GhostDeathException as exc:
-                self._handle_death(exc)
-                break
-            ticks += 1
-            if self._running:
-                time.sleep(self._pulse_seconds)
+        try:
+            while self._running:
+                if max_ticks is not None and ticks >= max_ticks:
+                    break
+                try:
+                    self._pulse()
+                except GhostDeathException as exc:
+                    self._handle_death(exc)
+                    break
+                ticks += 1
+                if self._running:
+                    time.sleep(self._pulse_seconds)
+        finally:
+            self._close_vitals_log()
 
     def stop(self) -> None:
         self._running = False
@@ -133,6 +147,20 @@ class GhostMesh:
 
     def _pulse(self) -> None:
         """Execute one heartbeat."""
+        # 1. Inject stochastic environmental event BEFORE metabolic tick
+        #    so the organism must react to a world that surprises it.
+        env_event = None
+        if self._env_events:
+            env_event = sample_event(rng=self._rng)
+            if not env_event.is_null():
+                self.state.apply_action_feedback(
+                    delta_energy=env_event.delta_energy,
+                    delta_heat=env_event.delta_heat,
+                    delta_waste=env_event.delta_waste,
+                    delta_integrity=env_event.delta_integrity,
+                    delta_stability=env_event.delta_stability,
+                )
+
         mask = self.rotator.active
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
@@ -152,6 +180,9 @@ class GhostMesh:
 
         if self._show_hud:
             print_hud(self.state.to_dict(), self.rotator.status())
+
+        # 2. Log per-tick vitals (if enabled)
+        self._write_vitals_log(action, env_event)
 
         # Rotate mask based on action and affect signal.
         # High negative affect (rising surprise) biases toward Judge/Guardian.
@@ -364,6 +395,46 @@ class GhostMesh:
                 data = json.load(fh)
             return MetabolicState.from_dict(data)
         return MetabolicState()
+
+    # ------------------------------------------------------------------ #
+    # Vitals logging                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _write_vitals_log(self, action: str, env_event) -> None:
+        """Append one JSON-lines record to the vitals log (if enabled)."""
+        if not self._vitals_log:
+            return
+        if self._vitals_fh is None:
+            self._vitals_fh = open(self._vitals_log, "a", buffering=1)  # line-buffered
+        s = self.state
+        # Use 'none' for null events so every record has a meaningful name
+        event_name = (
+            env_event.name
+            if env_event is not None and not env_event.is_null()
+            else "none"
+        )
+        record = {
+            "tick": s.entropy,
+            "energy": round(s.energy, 3),
+            "heat": round(s.heat, 3),
+            "waste": round(s.waste, 3),
+            "integrity": round(s.integrity, 3),
+            "stability": round(s.stability, 3),
+            "affect": round(s.affect, 4),
+            "free_energy": round(s.free_energy_estimate(), 3),
+            "health": round(s.health_score(), 3),
+            "stage": s.stage,
+            "action": action,
+            "mask": self.rotator.active.name,
+            "env_event": event_name,
+            "compute_load": self._compute_load,
+        }
+        self._vitals_fh.write(json.dumps(record) + "\n")
+
+    def _close_vitals_log(self) -> None:
+        if self._vitals_fh is not None:
+            self._vitals_fh.close()
+            self._vitals_fh = None
 
     # ------------------------------------------------------------------ #
     # Signal handler                                                       #

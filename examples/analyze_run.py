@@ -77,7 +77,8 @@ def print_text_summary(records: list[dict]) -> None:
 
     affects = [r.get("affect", 0.0) for r in records]
     fes = [r.get("free_energy", 0.0) for r in records]
-    healths = [r.get("health_score", 0.0) for r in records]
+    # Support both field names: "health" (vitals log) and "health_score" (RunLogger)
+    healths = [r.get("health_score", r.get("health", 0.0)) for r in records]
 
     print(f"\n{'='*62}")
     print(f"  GhostMesh Run Analysis — {n} ticks")

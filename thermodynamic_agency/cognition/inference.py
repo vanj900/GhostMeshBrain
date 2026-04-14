@@ -330,12 +330,14 @@ def compute_multistep_efe(
     complexity_per_tick = sum(abs(v) for v in predicted_delta.values()) * 0.05 / max(1, horizon)
 
     total = 0.0
-    for t in range(1, horizon + 1):
+    discount = 1.0
+    for _ in range(1, horizon + 1):
         vitals = _decay_vitals_one_step(vitals, allostatic_load=allostatic_load)
         accuracy = _accuracy_term(vitals, precision)
         risk = _risk_term(vitals)
         wear = _wear_term(allostatic_load)
-        total += (gamma ** (t - 1)) * (accuracy + complexity_per_tick + risk + wear)
+        total += discount * (accuracy + complexity_per_tick + risk + wear)
+        discount *= gamma
 
     return total
 

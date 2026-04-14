@@ -382,7 +382,7 @@ class MetabolicState:
         # Strip private fields (not persisted) and any unknown keys from old
         # state files that are no longer valid fields, while tolerating missing
         # new fields by falling through to dataclass defaults.
-        known = {f.name for f in cls.__dataclass_fields__.values()}
+        known = set(cls.__dataclass_fields__.keys())
         filtered = {
             k: v for k, v in data.items()
             if not k.startswith("_") and k in known

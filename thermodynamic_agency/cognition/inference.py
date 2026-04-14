@@ -21,11 +21,19 @@ compute_inference_cost(proposals, precision_weights, compute_load)
     Calibrated so that at normal load a 5-proposal DECIDE step costs
     ~0.15 energy + ~0.03 heat — roughly 1.25× the passive decay rate.
     This is enough to shape behavior without causing rapid death.
+
+ForwardModel (Layer 3 — Cerebellum prediction)
+    Maintains a rolling buffer of recent vital deltas and predicts the next
+    N vital states.  A ``prediction_error_term()`` method compares its last
+    forecasts to actual outcomes and returns a complexity penalty that is
+    added to EFE, forcing the organism to get better at anticipating its own
+    death risks.
 """
 
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -260,6 +268,7 @@ def active_inference_step(
     proposals: list[ActionProposal],
     precision_weights: dict[str, float] | None = None,
     compute_load: float = _DEFAULT_COMPUTE_LOAD,
+    reward_discount: float = 0.0,
 ) -> InferenceResult:
     """Select the action with the lowest EFE from a list of proposals.
 
@@ -277,6 +286,10 @@ def active_inference_step(
         Optional per-vital precision overrides from PrecisionEngine.
     compute_load:
         Scalar computational burden (scales inference cost).
+    reward_discount:
+        Fractional discount applied to all EFE scores (0–0.2).  Supplied by
+        NucleusAccumbens when affect is positive — makes all policies
+        relatively cheaper, biasing toward exploratory behaviour.
 
     Returns
     -------
@@ -299,7 +312,9 @@ def active_inference_step(
         # Adjust predicted delta for the energy cost of the action itself
         delta = dict(p.predicted_delta)
         delta["energy"] = delta.get("energy", 0.0) - p.cost_energy
-        scores[p.name] = compute_efe(state, delta, precision_weights)
+        raw_efe = compute_efe(state, delta, precision_weights)
+        # Apply reward discount from nucleus accumbens (positive affect bonus)
+        scores[p.name] = raw_efe * (1.0 - max(0.0, min(0.2, reward_discount)))
 
     best_name = min(scores, key=lambda k: scores[k])
     selected = next(p for p in proposals if p.name == best_name)
@@ -307,10 +322,11 @@ def active_inference_step(
     reasoning_parts = [
         f"{p.name}: EFE={scores[p.name]:.2f}" for p in proposals
     ]
+    discount_note = f" reward_discount={reward_discount:.3f}" if reward_discount > 0 else ""
     reasoning = (
         f"Min-EFE selection — {', '.join(reasoning_parts)} "
         f"[inference cost: E={cost.energy_cost:.3f} H={cost.heat_cost:.3f} "
-        f"KL={cost.kl_complexity:.1f} prec={cost.precision_used:.2f}]"
+        f"KL={cost.kl_complexity:.1f} prec={cost.precision_used:.2f}{discount_note}]"
     )
 
     return InferenceResult(
@@ -381,4 +397,194 @@ def generate_default_proposals(state: MetabolicState) -> list[ActionProposal]:
         ),
     ]
     return proposals
+
+
+# ---------------------------------------------------------------------- #
+# Forward Model (Layer 3 — Cerebellum prediction)                        #
+# ---------------------------------------------------------------------- #
+
+# Number of ticks of vital history to keep for delta smoothing
+_FORWARD_HISTORY: int = 8
+
+# Number of future vital states to predict
+_FORWARD_STEPS: int = 3
+
+# Prediction error penalty weight in EFE — scales the complexity term added
+# when forecasts were wrong.  Kept small so it shapes but doesn't dominate.
+_PREDICTION_ERROR_WEIGHT: float = 0.04
+
+# Vital names tracked by the forward model
+_VITAL_NAMES: tuple[str, ...] = ("energy", "heat", "waste", "integrity", "stability")
+
+
+@dataclass
+class ForwardPrediction:
+    """A set of N-step vital state predictions."""
+
+    steps: list[dict[str, float]]   # each element is {vital: predicted_value}
+
+
+class ForwardModel:
+    """Simple cerebellum-style forward model for vital state prediction.
+
+    Maintains a rolling buffer of recent vital readings and uses exponential
+    smoothing of observed deltas to predict the next ``n_steps`` vital states.
+    After each tick, ``update()`` is called with the actual new vitals and the
+    prediction error against the last forecast is accumulated.
+
+    The prediction error drives a complexity penalty on subsequent EFE scores
+    via ``prediction_error_term()``.  When the organism consistently mis-
+    forecasts its own vital trajectory it pays a higher cognitive cost —
+    incentivising accurate internal models of its own metabolism.
+
+    Usage
+    -----
+        fm = ForwardModel()
+
+        # Each tick:
+        pred_error = fm.prediction_error_term()  # penalty for last tick's miss
+        # ... add pred_error to EFE during DECIDE ...
+        fm.update(state)                         # record actual vitals
+
+        # After a DECIDE step, get the next-tick forecast:
+        forecast = fm.predict(state)
+    """
+
+    def __init__(
+        self,
+        history_size: int = _FORWARD_HISTORY,
+        n_steps: int = _FORWARD_STEPS,
+    ) -> None:
+        self._history: deque[dict[str, float]] = deque(maxlen=history_size)
+        self._n_steps = n_steps
+        self._last_prediction: ForwardPrediction | None = None
+        self._last_error: float = 0.0
+
+    # ------------------------------------------------------------------ #
+    # Public interface                                                     #
+    # ------------------------------------------------------------------ #
+
+    def update(self, state: MetabolicState) -> None:
+        """Record the current vital state and compute prediction error.
+
+        Call this once per tick, *after* the tick has completed, to update
+        the model with the actual observed vitals.
+
+        Parameters
+        ----------
+        state:
+            Current (post-tick) metabolic state.
+        """
+        vitals = self._vitals(state)
+
+        # Compute prediction error against last forecast (if we have one)
+        if self._last_prediction and self._last_prediction.steps:
+            predicted = self._last_prediction.steps[0]
+            squared_errors = [
+                (predicted.get(v, vitals[v]) - vitals[v]) ** 2
+                for v in _VITAL_NAMES
+            ]
+            self._last_error = sum(squared_errors) / len(squared_errors)
+        else:
+            self._last_error = 0.0
+
+        self._history.append(vitals)
+
+    def predict(self, state: MetabolicState) -> ForwardPrediction:
+        """Forecast the next ``n_steps`` vital states.
+
+        Uses exponential smoothing of observed tick-to-tick deltas.  When the
+        history buffer is empty, returns the current state unchanged.
+
+        Parameters
+        ----------
+        state:
+            Current metabolic state (used as the starting point).
+
+        Returns
+        -------
+        ForwardPrediction
+            Predicted vital-state dicts for the next n_steps ticks.
+        """
+        current = self._vitals(state)
+
+        if len(self._history) < 2:
+            # Not enough history: predict current state persists
+            self._last_prediction = ForwardPrediction(
+                steps=[dict(current) for _ in range(self._n_steps)]
+            )
+            return self._last_prediction
+
+        # Exponentially-smoothed mean delta
+        smoothed_delta = self._smoothed_delta()
+
+        steps: list[dict[str, float]] = []
+        prev = dict(current)
+        for _ in range(self._n_steps):
+            nxt = {v: prev[v] + smoothed_delta.get(v, 0.0) for v in _VITAL_NAMES}
+            steps.append(nxt)
+            prev = nxt
+
+        self._last_prediction = ForwardPrediction(steps=steps)
+        return self._last_prediction
+
+    def prediction_error_term(self) -> float:
+        """Return the EFE complexity penalty from last tick's prediction error.
+
+        Should be called during a DECIDE step before calling ``update()``,
+        so the penalty reflects the model's most recent forecast miss.
+
+        Returns
+        -------
+        float
+            Non-negative penalty to add to EFE scores.
+        """
+        return self._last_error * _PREDICTION_ERROR_WEIGHT
+
+    # ------------------------------------------------------------------ #
+    # Internals                                                            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _vitals(state: MetabolicState) -> dict[str, float]:
+        return {
+            "energy": state.energy,
+            "heat": state.heat,
+            "waste": state.waste,
+            "integrity": state.integrity,
+            "stability": state.stability,
+        }
+
+    def _smoothed_delta(self) -> dict[str, float]:
+        """Compute exponentially-smoothed tick-to-tick deltas over history.
+
+        Single forward pass builds per-step raw deltas; a separate backward
+        pass applies exponential weights — avoids repeated dict lookups per vital.
+        """
+        history = list(self._history)
+        if len(history) < 2:
+            return {v: 0.0 for v in _VITAL_NAMES}
+
+        # Pre-compute raw deltas in one forward pass
+        raw_deltas: list[dict[str, float]] = [
+            {v: history[i][v] - history[i - 1][v] for v in _VITAL_NAMES}
+            for i in range(1, len(history))
+        ]
+
+        alpha = 0.3  # smoothing factor (higher = more recent weight)
+        smoothed: dict[str, float] = {v: 0.0 for v in _VITAL_NAMES}
+        weight_sum = 0.0
+        w = 1.0
+
+        # Iterate most-recent first (reversed raw_deltas)
+        for delta in reversed(raw_deltas):
+            for v in _VITAL_NAMES:
+                smoothed[v] += w * delta[v]
+            weight_sum += w
+            w *= (1.0 - alpha)
+
+        if weight_sum > 0:
+            smoothed = {v: smoothed[v] / weight_sum for v in _VITAL_NAMES}
+
+        return smoothed
 

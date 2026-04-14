@@ -27,6 +27,7 @@ from thermodynamic_agency.core.environment import sample_event
 from thermodynamic_agency.cognition.inference import (
     active_inference_step,
     generate_default_proposals,
+    ForwardModel,
 )
 from thermodynamic_agency.cognition.ethics import EthicalEngine
 from thermodynamic_agency.cognition.janitor import Janitor
@@ -34,6 +35,7 @@ from thermodynamic_agency.cognition.surgeon import Surgeon
 from thermodynamic_agency.cognition.personality import MaskRotator
 from thermodynamic_agency.cognition.precision import PrecisionEngine
 from thermodynamic_agency.cognition.environment import EnvironmentStressor
+from thermodynamic_agency.cognition.limbic import LimbicLayer
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.interface.hud import print_hud
 from thermodynamic_agency.run_logger import RunLogger, TickRecord
@@ -70,6 +72,8 @@ class GhostMesh:
         self.surgeon = Surgeon(diary=self.diary)
         self.rotator = MaskRotator(initial_mask="Guardian")
         self.precision_engine = PrecisionEngine()
+        self.limbic = LimbicLayer()
+        self.forward_model = ForwardModel()
         self._running = False
         # Vitals log file handle (opened lazily on first write)
         self._vitals_fh = None
@@ -165,6 +169,26 @@ class GhostMesh:
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
 
+        # 2. Limbic processing — amygdala threat detection + accumbens reward.
+        #    This runs after tick() so it can read the just-updated affect signal.
+        limbic_signal = self.limbic.process(self.state)
+        if limbic_signal.heat_cost > 0 or limbic_signal.integrity_cost > 0:
+            self.state.apply_action_feedback(
+                delta_heat=-limbic_signal.heat_cost,
+                delta_integrity=-limbic_signal.integrity_cost,
+            )
+
+        # 3. Record the current vitals as an episodic memory slot.
+        self.limbic.push_episode(
+            tick=self.state.entropy,
+            content=(
+                f"tick={self.state.entropy} action={action} "
+                f"E={self.state.energy:.1f} T={self.state.heat:.1f} "
+                f"affect={self.state.affect:.2f}"
+            ),
+            metadata={"action": action, "affect": self.state.affect},
+        )
+
         # Apply stochastic environmental disturbance (if stressor is active)
         stressor_event = ""
         if self.stressor is not None:
@@ -181,19 +205,36 @@ class GhostMesh:
         if self._show_hud:
             print_hud(self.state.to_dict(), self.rotator.status())
 
-        # 2. Log per-tick vitals (if enabled)
+        # 4. Log per-tick vitals (if enabled)
         self._write_vitals_log(action, env_event)
 
-        # Rotate mask based on action and affect signal.
-        # High negative affect (rising surprise) biases toward Judge/Guardian.
-        # High positive affect (resolving surprise) biases toward Dreamer/Courier.
+        # Rotate mask based on action, affect, and limbic threat.
+        # High amygdala threat → SalienceNet override.
+        # Negative affect + stress → Guardian/Judge dominance.
+        # Positive affect → DefaultMode / Dreamer exploration.
         affect = self.state.affect
+        threat = limbic_signal.threat_level
         if affect < -0.4:
-            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint="REPAIR")
+            self.rotator.maybe_rotate(
+                self.state.entropy,
+                metabolic_hint="REPAIR",
+                affect=affect,
+                threat_level=threat,
+            )
         elif affect > 0.4:
-            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint="REST")
+            self.rotator.maybe_rotate(
+                self.state.entropy,
+                metabolic_hint="REST",
+                affect=affect,
+                threat_level=threat,
+            )
         else:
-            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint=action)
+            self.rotator.maybe_rotate(
+                self.state.entropy,
+                metabolic_hint=action,
+                affect=affect,
+                threat_level=threat,
+            )
 
         # Dispatch action; _decide() returns ethics-blocks count
         ethics_blocks = 0
@@ -204,7 +245,10 @@ class GhostMesh:
         elif action == "REPAIR":
             self._repair()
         else:  # "DECIDE"
-            ethics_blocks = self._decide()
+            ethics_blocks = self._decide(limbic_signal=limbic_signal)
+
+        # Update forward model with actual post-action vitals
+        self.forward_model.update(self.state)
 
         # Log this tick
         self.run_logger.record(
@@ -252,6 +296,16 @@ class GhostMesh:
 
     def _rest(self) -> None:
         """Run Janitor to compress context and cool heat/waste."""
+        # Consolidate episodic memory during REST (reduces integrity overflow cost)
+        flushed = self.limbic.consolidate(n=10)
+        if flushed:
+            self.diary.append(
+                DiaryEntry(
+                    tick=self.state.entropy,
+                    role="thought",
+                    content=f"LIMBIC: consolidated {len(flushed)} episodic slots.",
+                )
+            )
         report = self.janitor.run(self.state)
         self.diary.append(
             DiaryEntry(
@@ -280,8 +334,15 @@ class GhostMesh:
             )
         )
 
-    def _decide(self) -> int:
+    def _decide(self, limbic_signal=None) -> int:
         """Full active-inference planning cycle with thermodynamic precision cost.
+
+        Parameters
+        ----------
+        limbic_signal:
+            Optional ``LimbicSignal`` from the current tick's limbic processing.
+            Used to fold amygdala precision overrides and accumbens reward
+            discount into the inference step.
 
         Returns
         -------
@@ -302,6 +363,16 @@ class GhostMesh:
                 delta_heat=precision_report.heat_cost,
             )
 
+        # Merge amygdala precision overrides into base weights
+        precision_weights = dict(precision_report.weights)
+        if limbic_signal and limbic_signal.precision_overrides:
+            for vital, boost in limbic_signal.precision_overrides.items():
+                if vital in precision_weights:
+                    precision_weights[vital] = min(6.0, precision_weights[vital] + boost)
+
+        # Retrieve forward-model prediction error penalty (cerebellum layer)
+        fm_penalty = self.forward_model.prediction_error_term()
+
         raw_proposals = generate_default_proposals(self.state)
 
         # Ethics immune screening — count how many proposals are blocked
@@ -315,12 +386,16 @@ class GhostMesh:
             # truly lethal situations still raise a GhostDeathException.
             safe_proposals = raw_proposals
 
+        # EFE discount from nucleus accumbens (positive affect reward signal)
+        reward_discount = limbic_signal.efe_discount if limbic_signal else 0.0
+
         # active_inference_step charges the cognitive cost of evaluating proposals
         result = active_inference_step(
             self.state,
             safe_proposals,
-            precision_weights=precision_report.weights,
+            precision_weights=precision_weights,
             compute_load=self._compute_load,
+            reward_discount=reward_discount,
         )
         selected = result.selected
 
@@ -330,6 +405,7 @@ class GhostMesh:
             f"KL={cost.kl_complexity:.1f} prec={cost.precision_used:.2f}]"
             if cost else ""
         )
+        fm_str = f" fm_penalty={fm_penalty:.3f}" if fm_penalty > 0 else ""
 
         self.diary.append(
             DiaryEntry(
@@ -338,7 +414,7 @@ class GhostMesh:
                 content=(
                     f"DECIDE: selected '{selected.name}' "
                     f"(EFE={result.efe_scores[selected.name]:.2f}). "
-                    f"{result.reasoning} {cost_str}"
+                    f"{result.reasoning} {cost_str}{fm_str}"
                 ),
                 metadata={
                     "mask": self.rotator.active.name,
@@ -346,6 +422,9 @@ class GhostMesh:
                     "affect": self.state.affect,
                     "free_energy": precision_report.free_energy,
                     "ethics_blocks": ethics_blocks,
+                    "threat_level": limbic_signal.threat_level if limbic_signal else 0.0,
+                    "reward_discount": reward_discount,
+                    "fm_penalty": fm_penalty,
                 },
             )
         )

@@ -57,16 +57,44 @@ class MetabolicState:
     integrity: float = 100.0    # M — memory + logical/ethical coherence
     stability: float = 100.0    # S — entropic stability
 
+    # Affect — scalar valence derived from free-energy rate-of-change.
+    # Positive = rewarding resolution (surprise decreasing);
+    # Negative = unpleasure / stress (surprise increasing).
+    # Range: -1.0 .. +1.0
+    affect: float = 0.0
+
     # Meta
     entropy: int = 0            # monotonic tick counter (organism age)
     stage: Stage = "dormant"    # developmental stage
 
     # Internal bookkeeping
     _last_tick_ts: float = field(default_factory=time.time, repr=False, compare=False)
+    _prev_free_energy: float = field(default=0.0, repr=False, compare=False)
 
     # ------------------------------------------------------------------ #
-    # Core tick — called every heartbeat                                   #
+    # Free energy / affect + core tick                                    #
     # ------------------------------------------------------------------ #
+
+    def free_energy_estimate(self) -> float:
+        """Lightweight scalar proxy for current variational free energy.
+
+        Friston-style: free energy ≈ surprise = –log P(observations).
+        Here we use a normalised deviation from each vital's setpoint,
+        weighted by how existentially relevant that vital is.
+
+        Higher value → more surprise / stress.  Returns a non-negative
+        float in roughly the 0–100 range.
+        """
+        # Setpoints mirror _SETPOINT in inference.py
+        deviations = (
+            2.0 * max(0.0, 80.0 - self.energy) / 80.0          # low energy is surprising
+            + 1.5 * max(0.0, self.heat - 20.0) / 80.0           # high heat is surprising
+            + 1.0 * max(0.0, self.waste - 10.0) / 90.0          # high waste is surprising
+            + 1.8 * max(0.0, 85.0 - self.integrity) / 85.0      # low integrity is surprising
+            + 1.4 * max(0.0, 80.0 - self.stability) / 80.0      # low stability is surprising
+        )
+        # Normalise to 0-100 scale (weights sum: 2.0+1.5+1.0+1.8+1.4 = 7.7)
+        return deviations / 7.7 * 100.0
 
     def tick(self, compute_load: float = 1.0) -> ActionToken:
         """Advance one heartbeat, decay vitals, raise death exceptions.
@@ -86,6 +114,9 @@ class MetabolicState:
         EnergyDeathException, ThermalDeathException,
         MemoryCollapseException, EntropyDeathException
         """
+        # Snapshot free energy before decay so we can derive affect
+        fe_before = self._prev_free_energy
+
         # Passive decay — all non-linear to create emergent dynamics
         self.energy -= compute_load * 0.12
         self.heat += compute_load * 0.1 * (1.0 + self.waste / 50.0)
@@ -93,6 +124,15 @@ class MetabolicState:
         self.stability -= compute_load * 0.05
         self.waste += 0.018 * compute_load
         self.entropy += 1
+
+        # Compute affect: negative rate-of-change of free energy = pleasure
+        # (free energy going down = surprise resolving = positive affect)
+        fe_after = self.free_energy_estimate()
+        fe_delta = fe_after - fe_before
+        # Clamp to ±1 using a soft sigmoid-like normalisation
+        raw_affect = -fe_delta / (1.0 + abs(fe_delta))
+        self.affect = max(-1.0, min(1.0, raw_affect))
+        self._prev_free_energy = fe_after
 
         # Clamp values to sane physical bounds
         self.energy = max(self.energy, -1.0)          # allow brief overdraft
@@ -173,7 +213,10 @@ class MetabolicState:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d.pop("_last_tick_ts", None)
+        # Strip private implementation fields — not part of persisted state
+        for key in list(d.keys()):
+            if key.startswith("_"):
+                d.pop(key)
         return d
 
     def to_json(self) -> str:

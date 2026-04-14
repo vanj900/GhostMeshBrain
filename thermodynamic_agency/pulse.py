@@ -30,6 +30,7 @@ from thermodynamic_agency.cognition.ethics import EthicalEngine
 from thermodynamic_agency.cognition.janitor import Janitor
 from thermodynamic_agency.cognition.surgeon import Surgeon
 from thermodynamic_agency.cognition.personality import MaskRotator
+from thermodynamic_agency.cognition.precision import PrecisionEngine
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.interface.hud import print_hud
 
@@ -57,6 +58,7 @@ class GhostMesh:
         self.janitor = Janitor(diary=self.diary)
         self.surgeon = Surgeon(diary=self.diary)
         self.rotator = MaskRotator(initial_mask="Guardian")
+        self.precision_engine = PrecisionEngine()
         self._running = False
 
         # Register graceful shutdown
@@ -114,8 +116,16 @@ class GhostMesh:
         if self._show_hud:
             print_hud(self.state.to_dict(), self.rotator.status())
 
-        # Rotate mask based on action
-        self.rotator.maybe_rotate(self.state.entropy, metabolic_hint=action)
+        # Rotate mask based on action and affect signal.
+        # High negative affect (rising surprise) biases toward Judge/Guardian.
+        # High positive affect (resolving surprise) biases toward Dreamer/Courier.
+        affect = self.state.affect
+        if affect < -0.4:
+            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint="REPAIR")
+        elif affect > 0.4:
+            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint="REST")
+        else:
+            self.rotator.maybe_rotate(self.state.entropy, metabolic_hint=action)
 
         # Dispatch action
         if action == "FORAGE":
@@ -181,7 +191,19 @@ class GhostMesh:
         )
 
     def _decide(self) -> None:
-        """Full active-inference planning cycle."""
+        """Full active-inference planning cycle with thermodynamic precision cost."""
+        # Tune precision weights based on current metabolic state.
+        # The PrecisionEngine applies its own metabolic cost for sharpening attention.
+        precision_report = self.precision_engine.tune(
+            self.state, compute_load=self._compute_load
+        )
+        # Apply the precision-sharpening metabolic cost
+        if precision_report.energy_cost > 0 or precision_report.heat_cost > 0:
+            self.state.apply_action_feedback(
+                delta_energy=-precision_report.energy_cost,
+                delta_heat=precision_report.heat_cost,
+            )
+
         proposals = generate_default_proposals(self.state)
 
         # Ethics immune screening
@@ -189,8 +211,21 @@ class GhostMesh:
         if not safe_proposals:
             safe_proposals = proposals  # fallback: allow all if all blocked
 
-        result = active_inference_step(self.state, safe_proposals)
+        # active_inference_step charges the cognitive cost of evaluating proposals
+        result = active_inference_step(
+            self.state,
+            safe_proposals,
+            precision_weights=precision_report.weights,
+            compute_load=self._compute_load,
+        )
         selected = result.selected
+
+        cost = result.inference_cost
+        cost_str = (
+            f"inference_cost=[E={cost.energy_cost:.3f} H={cost.heat_cost:.3f} "
+            f"KL={cost.kl_complexity:.1f} prec={cost.precision_used:.2f}]"
+            if cost else ""
+        )
 
         self.diary.append(
             DiaryEntry(
@@ -199,14 +234,18 @@ class GhostMesh:
                 content=(
                     f"DECIDE: selected '{selected.name}' "
                     f"(EFE={result.efe_scores[selected.name]:.2f}). "
-                    f"{result.reasoning}"
+                    f"{result.reasoning} {cost_str}"
                 ),
-                metadata={"mask": self.rotator.active.name},
+                metadata={
+                    "mask": self.rotator.active.name,
+                    "precision_regime": precision_report.regime,
+                    "affect": self.state.affect,
+                    "free_energy": precision_report.free_energy,
+                },
             )
         )
 
         # Apply feedback from the selected action
-        # Map raw vital names to the delta_* kwargs expected by apply_action_feedback
         delta = selected.predicted_delta
         self.state.apply_action_feedback(
             delta_energy=delta.get("energy", 0.0),

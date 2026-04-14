@@ -63,6 +63,14 @@ class MetabolicState:
     # Range: -1.0 .. +1.0
     affect: float = 0.0
 
+    # Hormone proxies — allostatic modulators driven by sustained affect.
+    # cortisol_proxy: rises with chronic negative affect; amplifies decay rates
+    #   (allostatic load); range 0-1.
+    # dopamine_proxy: spikes on positive affect bursts; grants a brief DECIDE
+    #   efficiency bonus; decays rapidly; range 0-1.
+    cortisol_proxy: float = 0.0
+    dopamine_proxy: float = 0.0
+
     # Meta
     entropy: int = 0            # monotonic tick counter (organism age)
     stage: Stage = "dormant"    # developmental stage
@@ -133,6 +141,42 @@ class MetabolicState:
         raw_affect = -fe_delta / (1.0 + abs(fe_delta))
         self.affect = max(-1.0, min(1.0, raw_affect))
         self._prev_free_energy = fe_after
+
+        # ---- Hormone proxies --------------------------------------------- #
+        # Cortisol: accumulates under sustained negative affect (chronic stress).
+        # At high levels it amplifies both waste accumulation and heat rise —
+        # the organism literally runs hotter and dirtier under allostatic load.
+        if self.affect < -0.3:
+            self.cortisol_proxy = min(1.0, self.cortisol_proxy + 0.02 * compute_load)
+        else:
+            self.cortisol_proxy = max(0.0, self.cortisol_proxy - 0.01)
+
+        # Dopamine: spikes on positive affect bursts (surprise resolving fast).
+        # Grants a transient efficiency bonus: less waste per tick.
+        if self.affect > 0.4:
+            self.dopamine_proxy = min(1.0, self.dopamine_proxy + 0.05)
+        else:
+            self.dopamine_proxy = max(0.0, self.dopamine_proxy - 0.03)
+
+        # Apply allostatic load from cortisol
+        if self.cortisol_proxy > 0.3:
+            allostatic = (self.cortisol_proxy - 0.3) * compute_load
+            self.waste += 0.015 * allostatic
+            self.heat += 0.08 * allostatic
+
+        # Apply dopamine efficiency bonus: reduce waste increment slightly
+        if self.dopamine_proxy > 0.3:
+            dopamine_efficiency = (self.dopamine_proxy - 0.3) * 0.5
+            self.waste = max(0.0, self.waste - 0.005 * dopamine_efficiency)
+
+        # ---- Reticular arousal gate -------------------------------------- #
+        # High surprise (FE > 60) triggers a global arousal spike that boosts
+        # attention precision (handled by PrecisionEngine) but also generates
+        # extra heat — sustained arousal risks ThermalDeath.
+        if fe_after > 60.0:
+            arousal_overshoot = min(1.0, (fe_after - 60.0) / 40.0)
+            self.heat += arousal_overshoot * 0.4 * compute_load
+        # ------------------------------------------------------------------ #
 
         # Clamp values to sane physical bounds
         self.energy = max(self.energy, -1.0)          # allow brief overdraft

@@ -116,6 +116,52 @@ _MASK_MAP: dict[str, Mask] = {m.name: m for m in ALL_MASKS}
 
 
 # ------------------------------------------------------------------ #
+# Layer 4 — Hierarchical prefrontal masks                             #
+# (Default Mode, Salience Network, Central Executive)                  #
+# ------------------------------------------------------------------ #
+
+def _default_mode() -> Mask:
+    """Default Mode Network — self-reflection during REST; turns inward."""
+    return Mask(
+        name="DefaultMode",
+        description="Self-reflection and internal consolidation; active during REST.",
+        efe_precision_overrides={"integrity": 3.0, "stability": 2.8, "waste": 1.5},
+        voice_prefix="[DefaultMode] ",
+        min_ticks=5,
+    )
+
+
+def _salience_network() -> Mask:
+    """Salience Network — high-affect detection; orient attention to threats."""
+    return Mask(
+        name="SalienceNet",
+        description="Orients attention to salient stimuli under high affect.",
+        efe_precision_overrides={"energy": 2.5, "heat": 2.5, "integrity": 2.0},
+        voice_prefix="[SalienceNet] ",
+        min_ticks=3,
+    )
+
+
+def _central_executive() -> Mask:
+    """Central Executive Network — multi-step planning; orbitofrontal risk tuning."""
+    return Mask(
+        name="CentralExec",
+        description="Multi-step planning with heightened death-proximity awareness.",
+        efe_precision_overrides={"energy": 2.8, "integrity": 3.2, "stability": 2.5},
+        voice_prefix="[CentralExec] ",
+        min_ticks=6,
+    )
+
+
+# Extended mask registry including prefrontal layer
+ALL_MASKS_EXTENDED: list[Mask] = [
+    _healer(), _judge(), _courier(), _dreamer(), _guardian(),
+    _default_mode(), _salience_network(), _central_executive(),
+]
+_MASK_MAP_EXTENDED: dict[str, Mask] = {m.name: m for m in ALL_MASKS_EXTENDED}
+
+
+# ------------------------------------------------------------------ #
 # Mask rotator                                                        #
 # ------------------------------------------------------------------ #
 
@@ -124,7 +170,7 @@ class MaskRotator:
 
     def __init__(self, initial_mask: str = "Guardian") -> None:
         self._state = MaskState(
-            active_mask=_MASK_MAP.get(initial_mask, ALL_MASKS[0]),
+            active_mask=_MASK_MAP_EXTENDED.get(initial_mask, ALL_MASKS_EXTENDED[0]),
             activated_at_tick=0,
         )
 
@@ -141,6 +187,8 @@ class MaskRotator:
         current_tick: int,
         metabolic_hint: str = "DECIDE",
         force: str | None = None,
+        affect: float = 0.0,
+        threat_level: float = 0.0,
     ) -> Mask:
         """Possibly rotate to a new mask based on metabolic state or forcing.
 
@@ -152,29 +200,55 @@ class MaskRotator:
             Action token from tick() — biases mask selection.
         force:
             If provided, force-activate this mask by name.
+        affect:
+            Current affect signal from MetabolicState.  Strong negative affect
+            biases toward Guardian/SalienceNet; strong positive toward
+            Dreamer/DefaultMode.
+        threat_level:
+            Amygdala threat level (0–1).  High threat forces SalienceNet.
 
         Returns
         -------
         Mask
             The active mask after (possible) rotation.
         """
-        if force and force in _MASK_MAP:
-            self._activate(_MASK_MAP[force], current_tick)
+        if force and force in _MASK_MAP_EXTENDED:
+            self._activate(_MASK_MAP_EXTENDED[force], current_tick)
             return self._state.active_mask
 
         if self._state.ticks_active < self._state.active_mask.min_ticks:
             return self._state.active_mask
 
-        # Metabolic hint → preferred mask
-        preferred: dict[str, str] = {
-            "FORAGE": "Courier",
-            "REST": "Dreamer",
-            "REPAIR": "Healer",
-            "DECIDE": "Judge",
-        }
-        preferred_name = preferred.get(metabolic_hint, "Guardian")
-        if preferred_name in _MASK_MAP and preferred_name != self._state.active_mask.name:
-            self._activate(_MASK_MAP[preferred_name], current_tick)
+        # High amygdala threat → SalienceNet (detect what matters now)
+        if threat_level >= 0.6 and self._state.active_mask.name != "SalienceNet":
+            self._activate(_MASK_MAP_EXTENDED["SalienceNet"], current_tick)
+            return self._state.active_mask
+
+        # Affect-driven override for prefrontal masks
+        if affect < -0.4 and metabolic_hint == "REPAIR":
+            # Chronic stress + repair → Guardian or Judge (survival + ethics)
+            preferred_name = "Guardian"
+        elif affect > 0.4 and metabolic_hint in ("REST", "DECIDE"):
+            # Positive affect resolution → DefaultMode (self-reflection)
+            preferred_name = "DefaultMode"
+        elif metabolic_hint == "DECIDE" and affect >= -0.1:
+            # Healthy DECIDE state → CentralExecutive (planning)
+            preferred_name = "CentralExec"
+        else:
+            # Fallback to original metabolic-hint preferences
+            preferred: dict[str, str] = {
+                "FORAGE": "Courier",
+                "REST": "Dreamer",
+                "REPAIR": "Healer",
+                "DECIDE": "Judge",
+            }
+            preferred_name = preferred.get(metabolic_hint, "Guardian")
+
+        if (
+            preferred_name in _MASK_MAP_EXTENDED
+            and preferred_name != self._state.active_mask.name
+        ):
+            self._activate(_MASK_MAP_EXTENDED[preferred_name], current_tick)
 
         return self._state.active_mask
 

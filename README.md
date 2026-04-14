@@ -226,19 +226,98 @@ costs when they act, making the thermodynamic accounting closed.
 
 ---
 
-## Architecture
+## Brain Architecture Roadmap
+
+GhostMesh is being built as a layered synthetic brain — not a flat agent
+framework.  Each layer maps to real neural anatomy and adds genuine
+metabolic stakes.  Lower layers handle homeostasis; upper layers handle
+planning.  Every layer pays energy and heat to operate.
 
 ```
+╔══════════════════════════════════════════════════════════════════╗
+║  PREFRONTAL / EXECUTIVE  (Layer 4)                               ║
+║  personality.py — DefaultMode / SalienceNet / CentralExec masks  ║
+║  Working memory, multi-step planning, risk-tuned EFE             ║
+╠══════════════════════════════════════════════════════════════════╣
+║  LIMBIC SYSTEM  (Layer 2)  ← implemented                         ║
+║  cognition/limbic.py                                             ║
+║  • AmygdalaModule — threat detection → precision spike           ║
+║  • NucleusAccumbens — reward signal → EFE discount               ║
+║  • EpisodicBuffer — short-term memory with integrity cost        ║
+╠══════════════════════════════════════════════════════════════════╣
+║  CEREBELLUM  (Layer 3)  ← implemented                            ║
+║  cognition/inference.py — ForwardModel                           ║
+║  Predicts next 3–5 vital states; misforcasts add EFE penalty     ║
+╠══════════════════════════════════════════════════════════════════╣
+║  BRAINSTEM / HYPOTHALAMUS  (Layer 1)  ← implemented              ║
+║  core/metabolic.py                                               ║
+║  • cortisol_proxy — allostatic load (chronic stress → dW↑ dT↑)  ║
+║  • dopamine_proxy — efficiency bonus on positive affect bursts   ║
+║  • Reticular arousal gate — FE > 60 → heat spike                 ║
+╚══════════════════════════════════════════════════════════════════╝
+```
+
+### Current module coverage
+
+| Brain region | Analog | Module | Status |
+|---|---|---|---|
+| Hypothalamus | Energy/heat homeostasis | `core/metabolic.py` tick() | ✅ complete |
+| Brainstem hormones | Cortisol / dopamine proxies | `core/metabolic.py` | ✅ implemented |
+| Reticular formation | Arousal gate on high FE | `core/metabolic.py` | ✅ implemented |
+| Amygdala | Threat-driven precision spike | `cognition/limbic.py` | ✅ implemented |
+| Nucleus accumbens | Reward → EFE discount | `cognition/limbic.py` | ✅ implemented |
+| Hippocampus | Episodic memory buffer | `cognition/limbic.py` | ✅ implemented |
+| Cerebellum | Forward model + pred. error | `cognition/inference.py` | ✅ implemented |
+| Prefrontal cortex | Hierarchical exec. masks | `cognition/personality.py` | ✅ implemented |
+| Ethics immune | Hard-invariant gate | `cognition/ethics.py` | ✅ complete |
+| Thalamus | Precision gating | `cognition/precision.py` | ✅ complete |
+| Basal ganglia | Habit / action loops | — | 🔜 Phase 3 |
+| Full hier. pred. coding | Layer-to-layer error passing | — | 🔜 Phase 3 |
+
+### Affect → mask routing
+
+```
+affect < -0.4  + REPAIR  →  Guardian (survival-first)
+affect < -0.4  + stress  →  Judge    (ethics tighten)
+threat  ≥  0.6          →  SalienceNet (amygdala override)
+affect > +0.4  + REST   →  DefaultMode (self-reflection)
+affect > +0.4  + DECIDE →  DefaultMode (consolidation)
+DECIDE, neutral affect  →  CentralExec (multi-step planning)
+FORAGE                  →  Courier     (aggressive foraging)
+REST, low affect        →  Dreamer     (passive recovery)
+REPAIR                  →  Healer      (restorative)
+```
+
+### Metabolic costs (all layers pay)
+
+Every new layer charges the organism's budget:
+
+| Layer | Cost per tick |
+|-------|--------------|
+| Brainstem cortisol | dW +0.015 × allostatic, dT +0.08 × allostatic |
+| Reticular arousal | dT +0.4 × arousal_overshoot |
+| Amygdala firing | dT +0.15 × threat_level |
+| Episodic overflow | dM −0.02 per slot over capacity |
+| ForwardModel EFE penalty | Complexity term += mean_squared_error × 0.04 |
+| PrecisionEngine sharpening | dE −0.04 × boost, dT −0.02 × boost |
+| Active inference step | dE ~−0.15, dT ~+0.03 at load=1.0 |
+
+---
+
+
 thermodynamic_agency/
 ├── core/
 │   ├── exceptions.py   # Death exceptions (Energy/Thermal/Memory/Entropy)
-│   └── metabolic.py    # MetabolicState + tick() — the heartbeat
+│   └── metabolic.py    # MetabolicState + tick() + hormone proxies (cortisol/dopamine)
 ├── cognition/
-│   ├── inference.py    # active_inference_step + compute_efe
+│   ├── inference.py    # active_inference_step + compute_efe + ForwardModel
 │   ├── ethics.py       # EthicalEngine — immune system (non-bypassable gate)
 │   ├── janitor.py      # Waste management / context compression
 │   ├── surgeon.py      # Bayesian precision annealing / integrity repair
-│   └── personality.py  # Personality masks (Healer/Judge/Courier/Dreamer/Guardian)
+│   ├── personality.py  # Personality masks (Healer/Judge/Courier/Dreamer/Guardian
+│   │                   #   + DefaultMode/SalienceNet/CentralExec prefrontal layer)
+│   ├── limbic.py       # Limbic system (AmygdalaModule/NucleusAccumbens/EpisodicBuffer)
+│   └── precision.py    # PrecisionEngine — dynamic attention tuning
 ├── memory/
 │   └── diary.py        # RAM-ephemeral SQLite diary (/dev/shm)
 ├── interface/
@@ -582,9 +661,10 @@ python -m pytest tests/ -v
 ## Roadmap
 
 - **Phase 1 (complete):** MetabolicState + tick() + death exceptions + Janitor + Surgeon + active inference + ethics gate + personality masks + RAM diary + HUD + bash pulse
-- **Phase 2:** Wire Surgeon with precision-locked annealing; Ethics immune actively prunes code/priors
-- **Phase 3:** PostgreSQL LTM + pgvector; full min-surprise proposal simulator in Brain
-- **Phase 4:** Scale to bigger models; planning engine; constrained self-modification (see below)
+- **Phase 2 (complete):** Surgeon with precision-locked annealing; ethics immune actively prunes bad priors; PrecisionEngine sweet-spot arousal
+- **Phase 2.5 (complete):** Brain layers 1–4 — hormone proxies (cortisol/dopamine), reticular arousal gate, limbic system (amygdala/accumbens/episodic buffer), cerebellum forward model, prefrontal hierarchical masks (DefaultMode/SalienceNet/CentralExec)
+- **Phase 3:** Full hierarchical predictive coding (lower layers send raw errors up, higher layers send predictions down); thalamus gating; basal ganglia habit loops
+- **Phase 4:** Scale to bigger models; constrained self-modification at `evolved` stage with full audit trail (see below)
 
 ### Self-modification constraints (Phase 4)
 

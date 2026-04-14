@@ -277,7 +277,12 @@ class GhostMesh:
         safe_proposals = self.ethics.immune_scan(raw_proposals, self.state)
         ethics_blocks = len(raw_proposals) - len(safe_proposals)
         if not safe_proposals:
-            safe_proposals = raw_proposals  # fallback: allow all if all blocked
+            # All proposals were blocked — fall back to the full set rather than
+            # halting entirely.  This prevents the organism from deadlocking when
+            # extreme metabolic state causes every proposal to trip a hard
+            # invariant.  The tick() death-threshold checks still apply, so
+            # truly lethal situations still raise a GhostDeathException.
+            safe_proposals = raw_proposals
 
         # active_inference_step charges the cognitive cost of evaluating proposals
         result = active_inference_step(

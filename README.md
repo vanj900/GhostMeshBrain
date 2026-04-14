@@ -459,6 +459,7 @@ Observations from 500–5000 tick experiments:
 
 ---
 
+## Tests
 
 ```bash
 pip install -e ".[dev]"

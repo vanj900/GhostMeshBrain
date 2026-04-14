@@ -51,6 +51,15 @@ class RunLogger:
     path:
         File path for JSONL output.  If ``None`` or ``""``, records are
         kept in memory only.
+
+    Notes
+    -----
+    Callers **must** call :meth:`close` when finished to flush and release
+    the underlying file handle.  Alternatively, use the instance as a
+    context manager::
+
+        with RunLogger(path="/tmp/run.jsonl") as logger:
+            logger.record(TickRecord(...))
     """
 
     def __init__(self, path: str | None = None) -> None:
@@ -76,6 +85,13 @@ class RunLogger:
         if self._fh is not None:
             self._fh.close()
             self._fh = None
+
+    # Context manager support
+    def __enter__(self) -> "RunLogger":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     @property
     def records(self) -> list[TickRecord]:

@@ -278,6 +278,28 @@ mesh = GhostMesh()
 mesh.run(max_ticks=10)
 ```
 
+### Docker
+
+```bash
+docker build -t ghostmesh .
+
+# Interactive run with HUD
+docker run --rm -it --shm-size=64m ghostmesh
+
+# Stress-test inside container, results in /tmp/ghost_runs
+docker run --rm --shm-size=128m \
+  -e GHOST_HUD=0 \
+  -v /tmp/ghost_runs:/tmp/ghost_runs \
+  ghostmesh \
+  python examples/stress_test.py --ticks 2000 --output-dir /tmp/ghost_runs
+```
+
+> **Note on `/dev/shm`**: GhostMesh stores ephemeral state in `/dev/shm`
+> by default (RAM, wiped on reboot — ephemerality is intentional).
+> Docker containers provide `/dev/shm` at 64 MB by default; use
+> `--shm-size=128m` for long runs.  On systems without `/dev/shm`,
+> the shell scripts fall back to `/tmp` automatically.
+
 ### Bash daemon
 
 ```bash
@@ -299,8 +321,72 @@ GHOST_PULSE=5 ./scripts/ghostbrain.sh &
 | `GHOST_DIARY_PATH` | `/dev/shm/ghost_diary.db` | RAM diary SQLite path |
 | `GHOST_COMPUTE_LOAD` | `1.0` | Per-tick computational burden |
 | `GHOST_HUD` | `1` | Show HUD on each tick (`0` to disable) |
+| `GHOST_ENV_EVENTS` | `1` | Inject stochastic environmental shocks (`0` = flat world) |
+| `GHOST_VITALS_LOG` | `` | Path for per-tick JSONL vitals log (empty = disabled) |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for LLM features |
 | `OLLAMA_MODEL` | `mistral` | LLM model for Janitor summarisation |
+
+---
+
+## Stress Testing and Observed Behaviors
+
+The `examples/` directory contains tools to run long experiments and
+plot the results.  See [`examples/README.md`](examples/README.md) for
+full documentation.
+
+```bash
+# 2000-tick run (default load), logs to /tmp/ghost_runs/
+python examples/stress_test.py
+
+# Multi-load comparison (4 sessions: 0.5×, 1.0×, 1.5×, 2.0×)
+python examples/stress_test.py --multi --ticks 2000
+
+# Plot vitals from a log (requires matplotlib)
+python examples/plot_vitals.py /tmp/ghost_runs/vitals_cl1.0.jsonl
+```
+
+### What healthy long-run behavior looks like
+
+At `compute_load=1.0` with stochastic environmental events:
+
+- **Energy** oscillates between ~30–90; occasional FORAGE bursts pull it
+  back from the sub-25 threshold.  The organism forages proactively when
+  `calm` events accumulate energy and then uses it on `DECIDE` cycles.
+- **Heat and waste** rise slowly and are periodically flushed by REST/Janitor
+  passes triggered by `thermal_spike` and `waste_flood` events.  Neither
+  axis flatlines — the organism must actively manage them.
+- **Action distribution**: DECIDE typically dominates (60–70 %).  FORAGE and
+  REST each appear 10–15 %; REPAIR ~5–10 %.  Higher `compute_load` shifts
+  the distribution toward FORAGE/REPAIR.
+- **Personality masks**: Guardian and Judge dominate early; Dreamer appears
+  during stable DECIDE runs; Courier activates under FORAGE pressure;
+  Healer activates under REPAIR.  Mask switches correlate visibly with
+  affect sign changes in the log.
+- **Affect**: averages slightly positive (≈ 0.01–0.05) in healthy runs,
+  indicating net surprise resolution.  Drops negative after crisis events;
+  recovers within 5–10 ticks.
+- **Stage progression**: reaches `emerging` at tick 100 easily; `aware`
+  (tick 500 + health ≥ 50) is achievable in most runs; `evolved` (tick
+  2000 + health ≥ 60) requires sustained load ≤ 1.5.
+
+### Stress / near-death dynamics
+
+At `compute_load=1.5–1.8`:
+
+- Near-death ticks increase sharply; the ethics immune blocks high-cost
+  proposals when energy is below 5.0.
+- Precision engine enters `overload` mode, dampening all but survival
+  dimensions.
+- Guardian and Healer masks dominate; Dreamer rarely activates.
+- Recovery after a crisis event takes 15–25 ticks depending on which
+  vitals were hit.
+
+At `compute_load ≥ 2.0`:
+
+- Death cascades become common before tick 500 — useful for testing that
+  the death exceptions are genuinely non-bypassable.
+- EnergyDeathException is the most common terminal cause; ThermalDeath
+  occurs when waste accumulates faster than Janitor can clear it.
 
 ---
 
@@ -351,3 +437,69 @@ These constraints make self-modification **auditable, reversible in intent,
 and structurally bounded**.  Phase 4 work will include a test suite that
 asserts none of the above invariants can be bypassed by any generated
 proposal.
+
+---
+
+## Why This Is Different
+
+Most AI agents treat compute as free and existence as guaranteed.  GhostMesh
+is built on the opposite assumption: **existence is expensive, surprising, and
+temporary**.
+
+### The mainstream AI stack ignores physics
+
+Current LLM-based agents run on infinite context, infinite memory, and
+effectively zero metabolic cost.  The thermodynamics of real computation —
+heat dissipation, energy budgets, entropic degradation — are abstracted away.
+The result is systems that are powerful but fragile, brittle, and
+philosophically hollow: they have no skin in the game.
+
+### GhostMesh's claim
+
+1. **Mortal computation**: The organism pays for every inference in energy and
+   heat.  There is no free lunch.  The `compute_load` parameter is not a
+   dial — it is the body.  Turn it up and the organism dies faster; turn it
+   down and it thinks less.
+
+2. **Ethics as immune system, not guardrails**: The `EthicalEngine` is not a
+   post-hoc filter bolted on top.  It is a pre-action gate with hard-coded
+   invariants that cannot be overridden by any subsystem, including the
+   planning engine.  Proposals that violate survival constraints are blocked
+   before execution, not logged after.  This is the difference between an
+   immune system and a warning label.
+
+3. **Surprise as the primary drive**: The organism does not optimise a reward
+   function.  It minimises variational free energy — the upper bound on its
+   own surprise about its continued existence.  This is not metaphor; it is
+   implemented in `free_energy_estimate()`, `compute_efe()`, and
+   `PrecisionEngine.tune()`.  The drive to survive emerges from the drive to
+   remain unsurprised.
+
+4. **Affect as physiology, not decoration**: The `affect` signal is the
+   negative rate-of-change of free energy.  It is not a mood label.  When
+   surprise is resolving, affect is positive and the organism's attention
+   (precision) relaxes toward Dreamer/Courier masks.  When surprise is
+   growing, affect goes negative and the organism tightens to Guardian/Healer.
+   This coupling is structural, not heuristic.
+
+5. **Ephemerality as a feature**: State lives in `/dev/shm` — RAM that the OS
+   wipes on reboot.  The organism has a lifespan bounded by hardware uptime.
+   This is not a limitation; it is a design principle.  A system that can
+   die is a system with stakes.
+
+6. **Forkability over dependence**: No cloud API, no vendor lock-in.  The only
+   optional external dependency is Ollama for LLM-based Janitor summarisation
+   — and even that degrades gracefully to heuristic compression.  The organism
+   runs on your hardware, under your physics, on your terms.
+
+### What this is not
+
+GhostMesh is not a general-purpose assistant.  It is not trying to pass the
+Turing test.  It is a precision engine for studying what happens when
+cognition has real metabolic stakes — and whether structured mortality
+produces more coherent, self-preserving behavior than immortal systems
+optimising abstract reward.
+
+If that question interests you: fork it, stress-test it, break it, and share
+what you find.
+

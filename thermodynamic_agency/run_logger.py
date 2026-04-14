@@ -41,6 +41,8 @@ class TickRecord:
     stage: str                  # "dormant" / "emerging" / "aware" / "evolved"
     ethics_blocks: int = 0      # proposals blocked by ethics gate this tick
     stressor_event: str = ""    # description of environmental disturbance, or ""
+    allostatic_load: float = 0.0  # accumulated allostatic load [0, 100]
+    decide_streak: int = 0        # consecutive DECIDE ticks
 
 
 class RunLogger:

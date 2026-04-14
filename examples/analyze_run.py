@@ -130,6 +130,27 @@ def print_text_summary(records: list[dict]) -> None:
     print(f"\n  Ethics blocks   : {ethics_blocks}")
     print(f"  Stressor events : {stressor_events}  ({stressor_pct:.1f}% of ticks)")
 
+    # New Phase 6 metrics
+    al_vals = [r.get("allostatic_load", 0.0) for r in records]
+    if any(v > 0 for v in al_vals):
+        print(
+            f"\n  Allostatic Load  : "
+            f"mean={sum(al_vals)/n:.2f}  "
+            f"max={max(al_vals):.2f}"
+        )
+    streaks = [r.get("decide_streak", 0) for r in records]
+    if any(s > 0 for s in streaks):
+        print(f"  Max DECIDE streak: {max(streaks)}")
+
+    repair_ticks = [r for r in records if r.get("action") == "REPAIR"]
+    if repair_ticks:
+        proactive = sum(
+            1 for r in repair_ticks
+            if r.get("integrity", 100) >= 45.0 and r.get("stability", 100) >= 40.0
+        )
+        pmi = proactive / len(repair_ticks)
+        print(f"  Preventive Maint Index (PMI): {pmi:.3f}  (1.0 = fully anticipatory)")
+
     # Sample a few interesting stressor events
     sample_events = [
         f"    tick {r['tick']:>5}: {r['stressor_event']}"
@@ -155,13 +176,13 @@ def plot_with_matplotlib(records: list[dict], output_dir: str | None) -> None:
     n = len(records)
     ticks = [r["tick"] for r in records]
 
-    fig = plt.figure(figsize=(16, 12))
+    fig = plt.figure(figsize=(18, 16))
     fig.suptitle(
         f"GhostMesh Run Analysis  ({n} ticks  ·  final stage: {records[-1].get('stage','?')})",
         fontsize=13,
         fontweight="bold",
     )
-    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.45, wspace=0.30)
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.50, wspace=0.30)
 
     # ── Vital Signs ───────────────────────────────────────────────────
     ax_vitals = fig.add_subplot(gs[0, :])
@@ -183,8 +204,31 @@ def plot_with_matplotlib(records: list[dict], output_dir: str | None) -> None:
     ax_vitals.set_ylim(-5, 115)
     ax_vitals.grid(True, alpha=0.25)
 
+    # ── Allostatic Load ───────────────────────────────────────────────
+    ax_al = fig.add_subplot(gs[1, 0])
+    al_vals = [r.get("allostatic_load", 0.0) for r in records]
+    ax_al.plot(ticks, al_vals, color="#c0392b", alpha=0.85, linewidth=0.8)
+    ax_al.axhline(y=55.0, color="orange", linestyle="--", linewidth=0.8,
+                  label="Anticipatory REPAIR threshold (55)")
+    ax_al.set_ylabel("Allostatic Load [0–100]")
+    ax_al.set_title("Allostatic Load  (accumulated wear)")
+    ax_al.set_ylim(-2, 105)
+    ax_al.legend(fontsize=7)
+    ax_al.grid(True, alpha=0.25)
+
+    # ── DECIDE Streak ─────────────────────────────────────────────────
+    ax_streak = fig.add_subplot(gs[1, 1])
+    streak_vals = [r.get("decide_streak", 0) for r in records]
+    ax_streak.plot(ticks, streak_vals, color="#8e44ad", alpha=0.85, linewidth=0.8)
+    ax_streak.axhline(y=10.0, color="red", linestyle="--", linewidth=0.8,
+                      label="Fatigue onset (streak > 10)")
+    ax_streak.set_ylabel("Consecutive DECIDE ticks")
+    ax_streak.set_title("DECIDE Streak Length  (fatigue starts at 10)")
+    ax_streak.legend(fontsize=7)
+    ax_streak.grid(True, alpha=0.25)
+
     # ── Affect signal ─────────────────────────────────────────────────
-    ax_affect = fig.add_subplot(gs[1, 0])
+    ax_affect = fig.add_subplot(gs[2, 0])
     ax_affect.plot(
         ticks, [r.get("affect", 0.0) for r in records],
         color="#f39c12", alpha=0.85, linewidth=0.8,
@@ -196,7 +240,7 @@ def plot_with_matplotlib(records: list[dict], output_dir: str | None) -> None:
     ax_affect.grid(True, alpha=0.25)
 
     # ── Free Energy ───────────────────────────────────────────────────
-    ax_fe = fig.add_subplot(gs[1, 1])
+    ax_fe = fig.add_subplot(gs[2, 1])
     ax_fe.plot(
         ticks, [r.get("free_energy", 0.0) for r in records],
         color="#1abc9c", alpha=0.85, linewidth=0.8,
@@ -211,7 +255,7 @@ def plot_with_matplotlib(records: list[dict], output_dir: str | None) -> None:
         k = r.get("action", "?")
         action_counts[k] = action_counts.get(k, 0) + 1
 
-    ax_actions = fig.add_subplot(gs[2, 0])
+    ax_actions = fig.add_subplot(gs[3, 0])
     action_colors = {
         "DECIDE": "#2ecc71",
         "FORAGE": "#e74c3c",
@@ -238,7 +282,7 @@ def plot_with_matplotlib(records: list[dict], output_dir: str | None) -> None:
         k = r.get("mask", "?")
         mask_counts[k] = mask_counts.get(k, 0) + 1
 
-    ax_masks = fig.add_subplot(gs[2, 1])
+    ax_masks = fig.add_subplot(gs[3, 1])
     mask_colors = {
         "Guardian": "#e74c3c",
         "Healer":   "#2ecc71",

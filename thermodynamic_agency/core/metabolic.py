@@ -38,12 +38,31 @@ REST_HEAT_THRESHOLD: float = 80.0
 REPAIR_INTEGRITY_THRESHOLD: float = 45.0
 REPAIR_STABILITY_THRESHOLD: float = 40.0
 
+# Anticipatory REPAIR thresholds (Phase 3)
+REPAIR_ALLOSTATIC_THRESHOLD: float = 55.0   # trigger repair when load is high
+REPAIR_PROJECTED_INTEGRITY: float = 50.0    # trigger if projected integrity crosses this
+REPAIR_PROJECTED_STABILITY: float = 45.0    # trigger if projected stability crosses this
+
 # Stage evolution thresholds (based on entropy ticks + health metrics)
 STAGE_THRESHOLDS: dict[str, int] = {
     "emerging": 100,
     "aware": 500,
     "evolved": 2000,
 }
+
+# Allostatic load constants (Phase 2)
+_AL_T_SAFE: float = 35.0       # safe heat ceiling
+_AL_W_SAFE: float = 25.0       # safe waste ceiling
+_AL_ALPHA_T: float = 0.015     # heat contribution rate
+_AL_ALPHA_W: float = 0.010     # waste contribution rate
+_AL_ALPHA_FE: float = 0.003    # free-energy contribution rate
+_AL_BETA_REPAIR: float = 0.12  # repair reduces allostatic load
+_AL_BETA_REST: float = 0.04    # rest reduces allostatic load
+
+# DECIDE streak fatigue constants (Phase 4)
+_DECIDE_STREAK_FREE: int = 10   # streak ticks before fatigue kicks in
+_DECIDE_ETA_E: float = 0.01     # energy cost per streak tick beyond free threshold
+_DECIDE_ETA_T: float = 0.02     # heat cost per streak tick beyond free threshold
 
 
 @dataclass
@@ -70,6 +89,18 @@ class MetabolicState:
     #   efficiency bonus; decays rapidly; range 0-1.
     cortisol_proxy: float = 0.0
     dopamine_proxy: float = 0.0
+
+    # Allostatic load (Phase 2) — accumulated wear from repeated near-crises.
+    # Range: [0, 100].  High values worsen metabolism and trigger anticipatory REPAIR.
+    allostatic_load: float = 0.0
+
+    # DECIDE streak tracking (Phase 4) — consecutive DECIDE ticks.
+    # Prolonged thinking without acting becomes metabolically taxing.
+    decide_streak: int = 0
+
+    # Last executed action — used to credit repair/rest allostatic reduction
+    # in the following tick.
+    last_action: str = ""
 
     # Meta
     entropy: int = 0            # monotonic tick counter (organism age)
@@ -133,6 +164,14 @@ class MetabolicState:
         self.waste += 0.018 * compute_load
         self.entropy += 1
 
+        # DECIDE streak fatigue tax (Phase 4) — prolonged cognition without
+        # acting becomes metabolically expensive, nudging the organism toward
+        # REPAIR / REST / FORAGE after long unbroken DECIDE runs.
+        if self.last_action == "DECIDE" and self.decide_streak > _DECIDE_STREAK_FREE:
+            _streak_excess = self.decide_streak - _DECIDE_STREAK_FREE
+            self.energy -= _DECIDE_ETA_E * _streak_excess * compute_load
+            self.heat += _DECIDE_ETA_T * _streak_excess * compute_load
+
         # Compute affect: negative rate-of-change of free energy = pleasure
         # (free energy going down = surprise resolving = positive affect)
         fe_after = self.free_energy_estimate()
@@ -168,6 +207,27 @@ class MetabolicState:
         if self.dopamine_proxy > 0.3:
             dopamine_efficiency = (self.dopamine_proxy - 0.3) * 0.5
             self.waste = max(0.0, self.waste - 0.005 * dopamine_efficiency)
+
+        # ---- Allostatic load update (Phase 2) ----------------------------- #
+        # Accumulates from sustained heat, waste, and free energy.  Repair and
+        # rest reduce it.  High load feeds back into thermal and waste dynamics,
+        # so stress leaves a residue even after acute crisis passes.
+        al_gain = (
+            _AL_ALPHA_T * max(0.0, self.heat - _AL_T_SAFE)
+            + _AL_ALPHA_W * max(0.0, self.waste - _AL_W_SAFE)
+            + _AL_ALPHA_FE * fe_after
+        )
+        al_loss = 0.0
+        if self.last_action == "REPAIR":
+            al_loss += _AL_BETA_REPAIR
+        elif self.last_action == "REST":
+            al_loss += _AL_BETA_REST
+        self.allostatic_load = max(0.0, min(100.0, self.allostatic_load + al_gain - al_loss))
+
+        # Allostatic load feeds back into metabolism — stress leaves a residue
+        _al_ratio = self.allostatic_load / 100.0
+        self.heat += 0.08 * _al_ratio * compute_load
+        self.waste += 0.02 * _al_ratio * compute_load
 
         # ---- Reticular arousal gate -------------------------------------- #
         # High surprise (FE > 60) triggers a global arousal spike that boosts
@@ -217,6 +277,18 @@ class MetabolicState:
             or self.stability < REPAIR_STABILITY_THRESHOLD
         ):
             return "REPAIR"
+
+        # Anticipatory REPAIR (Phase 3) — act early based on projected trajectory
+        # or accumulated allostatic load, not just current crisis.
+        if self.allostatic_load > REPAIR_ALLOSTATIC_THRESHOLD:
+            return "REPAIR"
+        proj = self._project_vitals(horizon=5)
+        if (
+            proj["integrity"] < REPAIR_PROJECTED_INTEGRITY
+            or proj["stability"] < REPAIR_PROJECTED_STABILITY
+        ):
+            return "REPAIR"
+
         return "DECIDE"
 
     # ------------------------------------------------------------------ #
@@ -255,6 +327,45 @@ class MetabolicState:
     def is_healthy(self) -> bool:
         return self.health_score() >= 50.0
 
+    def _project_vitals(self, horizon: int = 5) -> dict[str, float]:
+        """Fast linear projection of vital signs over ``horizon`` ticks.
+
+        Applies the same passive decay rates used in ``tick()`` iteratively,
+        incorporating the current allostatic load feedback.  Used by tick()
+        for anticipatory REPAIR triggering (Phase 3).
+
+        Returns a dict of the *minimum* (worst-case) projected value for each
+        vital over the horizon, which is the relevant measure for safety.
+        """
+        e = self.energy
+        h = self.heat
+        w = self.waste
+        m = self.integrity
+        s = self.stability
+        al_ratio = self.allostatic_load / 100.0
+
+        min_integrity = m
+        min_stability = s
+
+        for _ in range(horizon):
+            w = w + 0.018 + 0.02 * al_ratio
+            h = h + 0.1 * (1.0 + w / 50.0) + 0.08 * al_ratio
+            m = m * (1.0 - (h / 120.0) * 0.01)
+            s = s - 0.05
+            e = e - 0.12
+            if m < min_integrity:
+                min_integrity = m
+            if s < min_stability:
+                min_stability = s
+
+        return {
+            "energy": e,
+            "heat": h,
+            "waste": w,
+            "integrity": min_integrity,
+            "stability": min_stability,
+        }
+
     def to_dict(self) -> dict:
         d = asdict(self)
         # Strip private implementation fields — not part of persisted state
@@ -268,8 +379,15 @@ class MetabolicState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "MetabolicState":
-        data = {k: v for k, v in data.items() if not k.startswith("_")}
-        return cls(**data)
+        # Strip private fields (not persisted) and any unknown keys from old
+        # state files that are no longer valid fields, while tolerating missing
+        # new fields by falling through to dataclass defaults.
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {
+            k: v for k, v in data.items()
+            if not k.startswith("_") and k in known
+        }
+        return cls(**filtered)
 
     def _snapshot(self) -> dict:
         return self.to_dict()

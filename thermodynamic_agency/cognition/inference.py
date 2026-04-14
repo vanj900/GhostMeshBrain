@@ -181,8 +181,163 @@ def compute_efe(
 
 
 # ---------------------------------------------------------------------- #
-# Inference cost                                                           #
+# Multi-step EFE (Phase 1 — anticipatory free-energy minimisation)        #
 # ---------------------------------------------------------------------- #
+
+# Rollout horizon and discount factor
+_HORIZON: int = 5
+_GAMMA: float = 0.92
+
+# Per-vital risk-penalty strength: applied when a vital is within its
+# safety margin of the death threshold.  Higher λ = stronger deterrence.
+_RISK_LAMBDA: dict[str, float] = {
+    "energy": 3.0,
+    "heat": 2.5,
+    "waste": 1.5,
+    "integrity": 2.8,
+    "stability": 2.2,
+}
+
+# Safety margins: how far inside the death threshold to start penalising.
+# e.g. energy margin=20 means the penalty starts when energy < 20.
+_SAFETY_MARGIN: dict[str, float] = {
+    "energy": 20.0,
+    "heat": 15.0,
+    "integrity": 20.0,
+    "stability": 20.0,
+}
+
+
+def _decay_vitals_one_step(
+    vitals: dict[str, float],
+    allostatic_load: float = 0.0,
+) -> dict[str, float]:
+    """Apply one tick of passive decay to a vitals snapshot dict.
+
+    Mirrors the decay equations in ``MetabolicState.tick()`` without the
+    exception-raising, hormone proxies, or arousal gate.  Suitable for
+    lightweight forward rollouts in EFE computation.
+    """
+    al_ratio = allostatic_load / 100.0
+    waste = vitals["waste"] + 0.018 + 0.02 * al_ratio
+    heat = vitals["heat"] + 0.1 * (1.0 + vitals["waste"] / 50.0) + 0.08 * al_ratio
+    integrity = vitals["integrity"] * (1.0 - (heat / 120.0) * 0.01)
+    stability = vitals["stability"] - 0.05
+    energy = vitals["energy"] - 0.12
+    return {
+        "energy": max(energy, -1.0),
+        "heat": min(heat, 110.0),
+        "waste": max(waste, 0.0),
+        "integrity": max(integrity, 0.0),
+        "stability": max(stability, -1.0),
+    }
+
+
+def _accuracy_term(vitals: dict[str, float], precision: dict[str, float]) -> float:
+    """Precision-weighted squared deviation from setpoints (accuracy term)."""
+    total = 0.0
+    for vital, setpoint in _SETPOINT.items():
+        p = precision.get(vital, 1.0)
+        total += p * (vitals[vital] - setpoint) ** 2
+    return total
+
+
+def _risk_term(vitals: dict[str, float]) -> float:
+    """Smooth threshold-margin penalty — rises quadratically inside safety margin.
+
+    Unlike the hard binary death check, this creates a continuous gradient that
+    repels the organism from dangerous regions even when not yet in crisis.
+    """
+    from thermodynamic_agency.core.metabolic import (
+        ENERGY_DEATH_THRESHOLD,
+        THERMAL_DEATH_THRESHOLD,
+        INTEGRITY_DEATH_THRESHOLD,
+        STABILITY_DEATH_THRESHOLD,
+    )
+
+    d_energy = vitals["energy"] - ENERGY_DEATH_THRESHOLD
+    d_heat = THERMAL_DEATH_THRESHOLD - vitals["heat"]
+    d_integrity = vitals["integrity"] - INTEGRITY_DEATH_THRESHOLD
+    d_stability = vitals["stability"] - STABILITY_DEATH_THRESHOLD
+
+    m_energy = _SAFETY_MARGIN.get("energy", 20.0)
+    m_heat = _SAFETY_MARGIN.get("heat", 15.0)
+    m_integrity = _SAFETY_MARGIN.get("integrity", 20.0)
+    m_stability = _SAFETY_MARGIN.get("stability", 20.0)
+
+    return (
+        _RISK_LAMBDA["energy"] * max(0.0, m_energy - d_energy) ** 2
+        + _RISK_LAMBDA["heat"] * max(0.0, m_heat - d_heat) ** 2
+        + _RISK_LAMBDA["integrity"] * max(0.0, m_integrity - d_integrity) ** 2
+        + _RISK_LAMBDA["stability"] * max(0.0, m_stability - d_stability) ** 2
+    )
+
+
+def _wear_term(allostatic_load: float) -> float:
+    """Latent damage penalty from accumulated allostatic load (Phase 2 link)."""
+    return 5.0 * (allostatic_load / 100.0) ** 2
+
+
+def compute_multistep_efe(
+    state: MetabolicState,
+    predicted_delta: dict[str, float],
+    precision_weights: dict[str, float] | None = None,
+    horizon: int = _HORIZON,
+    gamma: float = _GAMMA,
+) -> float:
+    """Compute multi-step Expected Free Energy via a short forward rollout.
+
+    Instead of scoring only the immediate post-action state, this rolls
+    forward ``horizon`` ticks of passive dynamics and accumulates the
+    discounted sum of accuracy + complexity + risk + wear.
+
+    EFE(a) = Σ_{t=1}^{H} γ^{t-1} * (accuracy_t + complexity_t + risk_t + wear_t)
+
+    Parameters
+    ----------
+    state:
+        Current metabolic state (read-only; not mutated).
+    predicted_delta:
+        Mapping of vital-name → Δvalue expected immediately after the action.
+    precision_weights:
+        Optional per-vital precision overrides.  Defaults to ``_PRECISION``.
+    horizon:
+        Number of future ticks to simulate (default 5).
+    gamma:
+        Temporal discount factor (default 0.92; recent ticks weighted more).
+
+    Returns
+    -------
+    float
+        Multi-step EFE score (non-negative; lower is better).
+    """
+    precision = precision_weights if precision_weights is not None else _PRECISION
+    allostatic_load = getattr(state, "allostatic_load", 0.0)
+
+    # Start from post-action state
+    vitals: dict[str, float] = {
+        "energy": state.energy,
+        "heat": state.heat,
+        "waste": state.waste,
+        "integrity": state.integrity,
+        "stability": state.stability,
+    }
+    for k, v in predicted_delta.items():
+        if k in vitals:
+            vitals[k] = vitals[k] + v
+
+    # Amortise the immediate actuation cost evenly across rollout ticks
+    complexity_per_tick = sum(abs(v) for v in predicted_delta.values()) * 0.05 / max(1, horizon)
+
+    total = 0.0
+    for t in range(1, horizon + 1):
+        vitals = _decay_vitals_one_step(vitals, allostatic_load=allostatic_load)
+        accuracy = _accuracy_term(vitals, precision)
+        risk = _risk_term(vitals)
+        wear = _wear_term(allostatic_load)
+        total += (gamma ** (t - 1)) * (accuracy + complexity_per_tick + risk + wear)
+
+    return total
 
 # GHOST_COMPUTE_LOAD default — overridden by env var in pulse.py
 _DEFAULT_COMPUTE_LOAD: float = 1.0
@@ -312,7 +467,7 @@ def active_inference_step(
         # Adjust predicted delta for the energy cost of the action itself
         delta = dict(p.predicted_delta)
         delta["energy"] = delta.get("energy", 0.0) - p.cost_energy
-        raw_efe = compute_efe(state, delta, precision_weights)
+        raw_efe = compute_multistep_efe(state, delta, precision_weights)
         # Apply reward discount from nucleus accumbens (positive affect bonus)
         scores[p.name] = raw_efe * (1.0 - max(0.0, min(0.2, reward_discount)))
 

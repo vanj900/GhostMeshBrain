@@ -55,6 +55,8 @@ def _run_session(
     state_file: str,
     diary_path: str,
     no_hud: bool,
+    stressor_prob: float = 0.0,
+    stressor_mode: str = "flat",
 ) -> dict:
     """Run one simulation session and return a summary dict."""
     import os
@@ -67,6 +69,8 @@ def _run_session(
     os.environ["GHOST_HUD"] = "0" if no_hud else os.environ.get("GHOST_HUD", "0")
     # No sleep between ticks in stress mode
     os.environ["GHOST_PULSE"] = "0"
+    os.environ["GHOST_STRESSOR_PROB"] = str(stressor_prob)
+    os.environ["GHOST_STRESSOR_MODE"] = stressor_mode
 
     from thermodynamic_agency.pulse import GhostMesh
 
@@ -126,6 +130,18 @@ def _summarise(records: list[dict], compute_load: float, elapsed: float, final_s
 
     final = records[-1]
 
+    # Preventive Maintenance Index (Phase 6):
+    # fraction of REPAIR ticks that happened BEFORE a threshold breach in that window.
+    repair_ticks = [r for r in records if r.get("action") == "REPAIR"]
+    repair_before_threshold = sum(
+        1 for r in repair_ticks
+        if r.get("integrity", 100) >= 45.0 and r.get("stability", 100) >= 40.0
+    )
+    pmi = (
+        repair_before_threshold / len(repair_ticks)
+        if repair_ticks else 0.0
+    )
+
     return {
         "ticks": ticks,
         "compute_load": compute_load,
@@ -145,7 +161,10 @@ def _summarise(records: list[dict], compute_load: float, elapsed: float, final_s
         "avg_stability": round(mean("stability"), 1),
         "avg_affect": round(mean("affect"), 4),
         "avg_free_energy": round(mean("free_energy"), 2),
+        "avg_allostatic_load": round(mean("allostatic_load"), 2),
+        "max_decide_streak": max((r.get("decide_streak", 0) for r in records), default=0),
         "near_death_ticks": near_death,
+        "preventive_maintenance_index": round(pmi, 3),
         "action_distribution": action_dist,
         "event_distribution": event_dist,
         "mask_distribution": mask_dist,
@@ -173,6 +192,10 @@ def _print_summary(summary: dict, label: str) -> None:
     print(f"    Stability  {summary['avg_stability']:6.1f}  (final {summary['final_stability']:.1f})")
     print(f"    Affect     {summary['avg_affect']:+.4f}")
     print(f"    Free-E     {summary['avg_free_energy']:6.2f}")
+    print(f"    Allostatic {summary['avg_allostatic_load']:6.2f}")
+    print(f"\n  DECIDE streak (max)  : {summary['max_decide_streak']}")
+    print(f"  Preventive Maint Idx : {summary['preventive_maintenance_index']:.3f}"
+          "  (1.0 = fully anticipatory)")
     print(f"\n  Action distribution:")
     for a, n in sorted(summary["action_distribution"].items()):
         pct = 100.0 * n / summary["ticks"] if summary["ticks"] else 0
@@ -251,6 +274,21 @@ def main() -> None:
         "--no-hud", action="store_true",
         help="Suppress per-tick HUD output (faster headless runs)",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["flat", "bursty", "hostile_windows"],
+        default="flat",
+        help=(
+            "Environment disturbance mode: "
+            "'flat' = independent events (default), "
+            "'bursty' = clustered events, "
+            "'hostile_windows' = periodic structured threat windows (Phase 5)"
+        ),
+    )
+    parser.add_argument(
+        "--stressor-prob", type=float, default=0.0,
+        help="Stressor probability per tick (0 = disabled, 0.05 = 5%% chance/tick)",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -275,7 +313,8 @@ def main() -> None:
                 os.remove(p)
 
         print(f"\n[stress_test] Starting session '{label}' — {args.ticks} ticks, "
-              f"compute_load={cl}, env_events={not args.no_env_events}")
+              f"compute_load={cl}, env_events={not args.no_env_events}, "
+              f"mode={args.mode}, stressor_prob={args.stressor_prob}")
 
         summary = _run_session(
             ticks=args.ticks,
@@ -286,6 +325,8 @@ def main() -> None:
             state_file=state_file,
             diary_path=diary_path,
             no_hud=args.no_hud,
+            stressor_prob=args.stressor_prob,
+            stressor_mode=args.mode,
         )
         summary["label"] = label
         summary["log_path"] = log_path

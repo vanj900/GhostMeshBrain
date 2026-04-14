@@ -83,11 +83,13 @@ class GhostMesh:
         _stressor_intensity = float(os.environ.get("GHOST_STRESSOR_INTENSITY", "1.0"))
         _stressor_seed_str = os.environ.get("GHOST_STRESSOR_SEED", "")
         _stressor_seed = int(_stressor_seed_str) if _stressor_seed_str else None
+        _stressor_mode = os.environ.get("GHOST_STRESSOR_MODE", "flat")
         self.stressor: EnvironmentStressor | None = (
             EnvironmentStressor(
                 prob=_stressor_prob,
                 intensity=_stressor_intensity,
                 seed=_stressor_seed,
+                mode=_stressor_mode,  # type: ignore[arg-type]
             )
             if _stressor_prob > 0.0
             else None
@@ -247,6 +249,13 @@ class GhostMesh:
         else:  # "DECIDE"
             ethics_blocks = self._decide(limbic_signal=limbic_signal)
 
+        # Update decide streak and last_action in state (Phase 4 + Phase 2)
+        if action == "DECIDE":
+            self.state.decide_streak += 1
+        else:
+            self.state.decide_streak = 0
+        self.state.last_action = action
+
         # Update forward model with actual post-action vitals
         self.forward_model.update(self.state)
 
@@ -268,6 +277,8 @@ class GhostMesh:
                 stage=self.state.stage,
                 ethics_blocks=ethics_blocks,
                 stressor_event=stressor_event,
+                allostatic_load=self.state.allostatic_load,
+                decide_streak=self.state.decide_streak,
             )
         )
 
@@ -507,6 +518,8 @@ class GhostMesh:
             "mask": self.rotator.active.name,
             "env_event": event_name,
             "compute_load": self._compute_load,
+            "allostatic_load": round(s.allostatic_load, 3),
+            "decide_streak": s.decide_streak,
         }
         self._vitals_fh.write(json.dumps(record) + "\n")
 

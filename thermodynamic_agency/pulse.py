@@ -33,8 +33,10 @@ from thermodynamic_agency.cognition.janitor import Janitor
 from thermodynamic_agency.cognition.surgeon import Surgeon
 from thermodynamic_agency.cognition.personality import MaskRotator
 from thermodynamic_agency.cognition.precision import PrecisionEngine
+from thermodynamic_agency.cognition.environment import EnvironmentStressor
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.interface.hud import print_hud
+from thermodynamic_agency.run_logger import RunLogger, TickRecord
 
 STATE_FILE = os.environ.get("GHOST_STATE_FILE", "/dev/shm/ghost_metabolic.json")
 DIARY_PATH = os.environ.get("GHOST_DIARY_PATH", "/dev/shm/ghost_diary.db")
@@ -71,6 +73,28 @@ class GhostMesh:
         self._running = False
         # Vitals log file handle (opened lazily on first write)
         self._vitals_fh = None
+
+        # Optional stochastic environment stressor
+        _stressor_prob = float(os.environ.get("GHOST_STRESSOR_PROB", "0.0"))
+        _stressor_intensity = float(os.environ.get("GHOST_STRESSOR_INTENSITY", "1.0"))
+        _stressor_seed_str = os.environ.get("GHOST_STRESSOR_SEED", "")
+        _stressor_seed = int(_stressor_seed_str) if _stressor_seed_str else None
+        self.stressor: EnvironmentStressor | None = (
+            EnvironmentStressor(
+                prob=_stressor_prob,
+                intensity=_stressor_intensity,
+                seed=_stressor_seed,
+            )
+            if _stressor_prob > 0.0
+            else None
+        )
+
+        # Optional per-tick run logger (writes JSONL to GHOST_LOG_FILE if set)
+        _log_file = os.environ.get("GHOST_LOG_FILE", "")
+        self.run_logger = RunLogger(path=_log_file if _log_file else None)
+
+        # Tracks precision regime set during the last DECIDE step for logging
+        self._last_precision_regime: str = "dormant"
 
         # Register graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -141,6 +165,19 @@ class GhostMesh:
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
 
+        # Apply stochastic environmental disturbance (if stressor is active)
+        stressor_event = ""
+        if self.stressor is not None:
+            stressor_event = self.stressor.maybe_disturb(self.state)
+            if stressor_event:
+                self.diary.append(
+                    DiaryEntry(
+                        tick=self.state.entropy,
+                        role="environment",
+                        content=f"STRESSOR: {stressor_event}",
+                    )
+                )
+
         if self._show_hud:
             print_hud(self.state.to_dict(), self.rotator.status())
 
@@ -158,7 +195,8 @@ class GhostMesh:
         else:
             self.rotator.maybe_rotate(self.state.entropy, metabolic_hint=action)
 
-        # Dispatch action
+        # Dispatch action; _decide() returns ethics-blocks count
+        ethics_blocks = 0
         if action == "FORAGE":
             self._forage()
         elif action == "REST":
@@ -166,7 +204,28 @@ class GhostMesh:
         elif action == "REPAIR":
             self._repair()
         else:  # "DECIDE"
-            self._decide()
+            ethics_blocks = self._decide()
+
+        # Log this tick
+        self.run_logger.record(
+            TickRecord(
+                tick=self.state.entropy,
+                action=action,
+                mask=self.rotator.active.name,
+                energy=self.state.energy,
+                heat=self.state.heat,
+                waste=self.state.waste,
+                integrity=self.state.integrity,
+                stability=self.state.stability,
+                affect=self.state.affect,
+                free_energy=self.state.free_energy_estimate(),
+                precision_regime=self._last_precision_regime,
+                health_score=self.state.health_score(),
+                stage=self.state.stage,
+                ethics_blocks=ethics_blocks,
+                stressor_event=stressor_event,
+            )
+        )
 
         # Persist state
         self._save_state()
@@ -221,13 +280,21 @@ class GhostMesh:
             )
         )
 
-    def _decide(self) -> None:
-        """Full active-inference planning cycle with thermodynamic precision cost."""
+    def _decide(self) -> int:
+        """Full active-inference planning cycle with thermodynamic precision cost.
+
+        Returns
+        -------
+        int
+            Number of proposals blocked by the ethics gate this cycle.
+        """
         # Tune precision weights based on current metabolic state.
         # The PrecisionEngine applies its own metabolic cost for sharpening attention.
         precision_report = self.precision_engine.tune(
             self.state, compute_load=self._compute_load
         )
+        # Store regime for the run logger
+        self._last_precision_regime = precision_report.regime
         # Apply the precision-sharpening metabolic cost
         if precision_report.energy_cost > 0 or precision_report.heat_cost > 0:
             self.state.apply_action_feedback(
@@ -235,12 +302,18 @@ class GhostMesh:
                 delta_heat=precision_report.heat_cost,
             )
 
-        proposals = generate_default_proposals(self.state)
+        raw_proposals = generate_default_proposals(self.state)
 
-        # Ethics immune screening
-        safe_proposals = self.ethics.immune_scan(proposals, self.state)
+        # Ethics immune screening — count how many proposals are blocked
+        safe_proposals = self.ethics.immune_scan(raw_proposals, self.state)
+        ethics_blocks = len(raw_proposals) - len(safe_proposals)
         if not safe_proposals:
-            safe_proposals = proposals  # fallback: allow all if all blocked
+            # All proposals were blocked — fall back to the full set rather than
+            # halting entirely.  This prevents the organism from deadlocking when
+            # extreme metabolic state causes every proposal to trip a hard
+            # invariant.  The tick() death-threshold checks still apply, so
+            # truly lethal situations still raise a GhostDeathException.
+            safe_proposals = raw_proposals
 
         # active_inference_step charges the cognitive cost of evaluating proposals
         result = active_inference_step(
@@ -272,6 +345,7 @@ class GhostMesh:
                     "precision_regime": precision_report.regime,
                     "affect": self.state.affect,
                     "free_energy": precision_report.free_energy,
+                    "ethics_blocks": ethics_blocks,
                 },
             )
         )
@@ -285,6 +359,8 @@ class GhostMesh:
             delta_integrity=delta.get("integrity", 0.0),
             delta_stability=delta.get("stability", 0.0),
         )
+
+        return ethics_blocks
 
     # ------------------------------------------------------------------ #
     # Death handler                                                        #
@@ -300,6 +376,7 @@ class GhostMesh:
             )
         )
         self._save_state()
+        self.run_logger.close()
         print(f"\n[GhostMesh] *** {cause} *** — organism terminated.", file=sys.stderr)
         print(f"  Last state: {json.dumps(exc.state, indent=2)}", file=sys.stderr)
 
@@ -366,6 +443,7 @@ class GhostMesh:
     def _handle_signal(self, signum: int, frame: object) -> None:
         print("\n[GhostMesh] Signal received — shutting down gracefully.", file=sys.stderr)
         self._running = False
+        self.run_logger.close()
 
 
 # ------------------------------------------------------------------ #

@@ -7,7 +7,7 @@ later analysis or plotting.
 
 Usage
 -----
-    # 2000-tick run at default load, logs to /tmp/run_cl1.0.jsonl
+    # 2000-tick run at default load, logs to /tmp/ghost_runs/vitals_cl1.0.jsonl
     python examples/stress_test.py
 
     # 5000-tick run at elevated load 1.8
@@ -18,6 +18,9 @@ Usage
 
     # Disable environmental events (flat world)
     python examples/stress_test.py --no-env-events --ticks 1000
+
+    # Suppress per-tick HUD output for faster headless runs
+    python examples/stress_test.py --no-hud --ticks 5000 --output-dir /tmp/runs
 
 Output
 ------
@@ -32,7 +35,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -52,6 +54,7 @@ def _run_session(
     seed: int | None,
     state_file: str,
     diary_path: str,
+    no_hud: bool,
 ) -> dict:
     """Run one simulation session and return a summary dict."""
     import os
@@ -61,6 +64,7 @@ def _run_session(
     os.environ["GHOST_ENV_EVENTS"] = "1" if env_events else "0"
     os.environ["GHOST_STATE_FILE"] = state_file
     os.environ["GHOST_DIARY_PATH"] = diary_path
+    os.environ["GHOST_HUD"] = "0" if no_hud else os.environ.get("GHOST_HUD", "0")
     # No sleep between ticks in stress mode
     os.environ["GHOST_PULSE"] = "0"
 
@@ -243,6 +247,10 @@ def main() -> None:
         "--plot", action="store_true",
         help="Generate matplotlib vitals charts (requires matplotlib)",
     )
+    parser.add_argument(
+        "--no-hud", action="store_true",
+        help="Suppress per-tick HUD output (faster headless runs)",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -277,6 +285,7 @@ def main() -> None:
             seed=args.seed,
             state_file=state_file,
             diary_path=diary_path,
+            no_hud=args.no_hud,
         )
         summary["label"] = label
         summary["log_path"] = log_path

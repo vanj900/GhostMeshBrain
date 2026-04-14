@@ -401,6 +401,150 @@ At `compute_load ≥ 2.0`:
 
 ---
 
+## Setup Notes
+
+### `/dev/shm` requirement
+
+By default the organism stores its metabolic state and diary in RAM-backed
+`/dev/shm` (Linux only).  This is intentional — state is ephemeral and
+mortal, not persisted to disk unless you explicitly override the paths.
+
+On **macOS or Windows**, or whenever `/dev/shm` is unavailable, override
+both paths:
+
+```bash
+export GHOST_STATE_FILE=/tmp/ghost_metabolic.json
+export GHOST_DIARY_PATH=/tmp/ghost_diary.db
+python -m thermodynamic_agency
+```
+
+### Ollama / LLM dependency
+
+The Janitor subsystem supports an **optional** LLM back-end (Ollama +
+Mistral) for higher-quality context summarisation.  It is **disabled by
+default** (`use_llm=False`).  The heuristic fallback runs entirely
+in-process with zero external dependencies.
+
+To enable LLM summarisation, start Ollama locally and pass `use_llm=True`
+when constructing the `Janitor`, or set the relevant env vars:
+
+```bash
+OLLAMA_URL=http://localhost:11434 OLLAMA_MODEL=mistral python -m thermodynamic_agency
+```
+
+The organism charges a proportional metabolic cost for LLM calls
+(longer prompts → more energy + heat), so enabling LLM makes cognitive
+work genuinely more expensive.
+
+### Docker quick-start
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install -e .
+ENV GHOST_STATE_FILE=/tmp/ghost_metabolic.json
+ENV GHOST_DIARY_PATH=/tmp/ghost_diary.db
+ENV GHOST_HUD=1
+ENV GHOST_PULSE=5
+CMD ["python", "-m", "thermodynamic_agency"]
+```
+
+---
+
+## Examples & Stress Testing
+
+The `examples/` directory contains two scripts for long-run experiments and
+analysis.
+
+### `stress_test.py` — configurable run harness
+
+```bash
+# 2000-tick run, moderate stress environment, save log
+python examples/stress_test.py --ticks 2000 --load 1.5 \
+    --stressor-prob 0.08 --stressor-intensity 1.2 \
+    --log-file /tmp/ghost_run.jsonl --no-hud
+
+# Reproducible 5000-tick experiment
+python examples/stress_test.py --ticks 5000 --seed 42 \
+    --log-file /tmp/ghost_long.jsonl --no-hud
+```
+
+Key flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ticks` | 500 | Heartbeat ticks to run |
+| `--load` | 1.0 | Compute load (multiplies all metabolic costs) |
+| `--stressor-prob` | 0.05 | Probability of environmental disturbance per tick |
+| `--stressor-intensity` | 1.0 | Scale factor for disturbance magnitude |
+| `--log-file` | _(none)_ | Path to write JSONL run log |
+| `--seed` | _(none)_ | Fixed RNG seed for reproducibility |
+| `--no-hud` | off | Suppress per-tick HUD output |
+
+### `analyze_run.py` — log analysis and plotting
+
+```bash
+# Text summary only (no matplotlib required)
+python examples/analyze_run.py /tmp/ghost_run.jsonl --no-plot
+
+# Text summary + interactive matplotlib plot
+python examples/analyze_run.py /tmp/ghost_run.jsonl
+
+# Save plot PNG to directory
+python examples/analyze_run.py /tmp/ghost_run.jsonl --output /tmp/plots/
+```
+
+Produces:
+- Action token distribution across all ticks
+- Personality mask dwell-time distribution
+- Precision regime breakdown
+- Affect / free-energy / health statistics
+- _(with matplotlib)_ Multi-panel vital-sign trajectory, affect signal,
+  free-energy trajectory, action bar chart, mask pie chart
+
+### Stochastic environmental disturbances
+
+Pass `--stressor-prob > 0` to activate the `EnvironmentStressor`.  It
+randomly fires one of four event types each tick:
+
+| Event | Effect |
+|-------|--------|
+| `energy_drain` | −5 to −20 energy (simulates external compute demand) |
+| `heat_burst` | +5 to +15 heat (simulates context-injection spike) |
+| `waste_dump` | +8 to +25 waste (simulates noisy input) |
+| `stability_quake` | −3 to −12 stability (simulates entropic event) |
+
+With `stressor_prob=0.05` the organism experiences roughly one shock every
+twenty ticks, forcing active FORAGE / REST / REPAIR responses rather than
+just riding the passive decay curve.  Raise intensity to `1.5–2.0` for
+near-death experiment conditions.
+
+---
+
+## Expected Behaviors Over Long Runs
+
+Observations from 500–5000 tick experiments:
+
+- **DECIDE dominates** (~60–75 % of ticks) in healthy runs; FORAGE spikes
+  transiently when stressor energy-drain events cluster.
+- **Guardian → Dreamer rotation** is the most common affect-driven switch:
+  the organism settles into Guardian under stress, then shifts to Dreamer
+  when surprise resolves (positive affect).
+- **Sweet-spot arousal** (precision_regime = "sweet_spot") correlates with
+  the highest DECIDE frequency and sharpest EFE discrimination — this is
+  the "aware" behavior the system is designed to maximise.
+- **Near-death recovery**: under stressor_prob=0.10 and load=1.5,
+  EnergyDeathException typically fires at tick ~300–600 unless foraging
+  efficiency compensates.  Reducing load to 1.2 or stressor_prob to 0.06
+  allows runs to reach the `aware` stage threshold (tick 500+).
+- **Ethics blocks** remain near zero in default runs because the built-in
+  proposals don't violate hard invariants.  They fire when heat is already
+  near 90 and a `compress_context` proposal would push it over — the system
+  correctly falls back to idle or reflect.
+
+---
+
 ## Tests
 
 ```bash

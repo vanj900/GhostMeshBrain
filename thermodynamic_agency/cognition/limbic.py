@@ -199,16 +199,16 @@ class EpisodicBuffer:
         self._slots.append(slot)
 
         # Auto-trim: discard oldest unconsolidated when buffer is too full.
-        # This mimics the hippocampus failing to retain unprocessed episodes.
+        # Single-pass: count how many to drop, then rebuild in one go.
         max_unconsolidated = self.capacity * 2
-        active = [s for s in self._slots if not s.consolidated]
-        if len(active) > max_unconsolidated:
-            trim = len(active) - max_unconsolidated
-            removed = 0
+        n_active = sum(1 for s in self._slots if not s.consolidated)
+        trim = max(0, n_active - max_unconsolidated)
+        if trim:
+            to_remove = 0
             kept: list[EpisodicSlot] = []
             for s in self._slots:
-                if not s.consolidated and removed < trim:
-                    removed += 1  # discard
+                if not s.consolidated and to_remove < trim:
+                    to_remove += 1  # discard oldest unconsolidated
                 else:
                     kept.append(s)
             self._slots = kept
@@ -244,14 +244,14 @@ class EpisodicBuffer:
                 flushed.append(slot)
                 count += 1
 
-        # Prune consolidated slots once buffer exceeds 2× capacity
+        # Prune when buffer exceeds 2× capacity: single-pass partition into
+        # (recent-consolidated, unconsolidated) keeping most-recent consolidated.
         if len(self._slots) > self.capacity * 2:
-            unconsolidated = [s for s in self._slots if not s.consolidated]
-            # Keep most-recent consolidated ones to pad back to capacity
-            consolidated_recent = [s for s in self._slots if s.consolidated][
-                -self.capacity:
-            ]
-            self._slots = consolidated_recent + unconsolidated
+            consolidated: list[EpisodicSlot] = []
+            unconsolidated: list[EpisodicSlot] = []
+            for s in self._slots:
+                (consolidated if s.consolidated else unconsolidated).append(s)
+            self._slots = consolidated[-self.capacity:] + unconsolidated
 
         return flushed
 

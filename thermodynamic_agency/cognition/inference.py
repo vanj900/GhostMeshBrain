@@ -556,19 +556,30 @@ class ForwardModel:
         }
 
     def _smoothed_delta(self) -> dict[str, float]:
-        """Compute exponentially-smoothed tick-to-tick deltas over history."""
+        """Compute exponentially-smoothed tick-to-tick deltas over history.
+
+        Single forward pass builds per-step raw deltas; a separate backward
+        pass applies exponential weights — avoids repeated dict lookups per vital.
+        """
         history = list(self._history)
         if len(history) < 2:
             return {v: 0.0 for v in _VITAL_NAMES}
+
+        # Pre-compute raw deltas in one forward pass
+        raw_deltas: list[dict[str, float]] = [
+            {v: history[i][v] - history[i - 1][v] for v in _VITAL_NAMES}
+            for i in range(1, len(history))
+        ]
 
         alpha = 0.3  # smoothing factor (higher = more recent weight)
         smoothed: dict[str, float] = {v: 0.0 for v in _VITAL_NAMES}
         weight_sum = 0.0
         w = 1.0
 
-        for i in range(len(history) - 1, 0, -1):
+        # Iterate most-recent first (reversed raw_deltas)
+        for delta in reversed(raw_deltas):
             for v in _VITAL_NAMES:
-                smoothed[v] += w * (history[i][v] - history[i - 1][v])
+                smoothed[v] += w * delta[v]
             weight_sum += w
             w *= (1.0 - alpha)
 

@@ -382,7 +382,7 @@ class PredictiveHierarchy:
         for v in _VITALS:
             pred = self._l2.predictions.get(v, _PREFRONTAL_SETPOINTS[v])
             sp = _PREFRONTAL_SETPOINTS[v]
-            rng = sp if sp != 0 else 50.0
+            rng = max(1.0, abs(sp)) if sp != 0 else 50.0
             # Normalised deviation 0-1
             dev = min(1.0, abs(pred - sp) / rng)
             # Precision boost: 0 at setpoint, up to +1.5 at maximum deviation

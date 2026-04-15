@@ -306,7 +306,10 @@ class BasalGanglia:
         if al <= HABIT_DECAY_AL_THRESHOLD:
             return
 
-        excess = (al - HABIT_DECAY_AL_THRESHOLD) / (100.0 - HABIT_DECAY_AL_THRESHOLD)
+        al_range = 100.0 - HABIT_DECAY_AL_THRESHOLD
+        if al_range <= 0.0:
+            return
+        excess = (al - HABIT_DECAY_AL_THRESHOLD) / al_range
         decay = HABIT_DECAY_RATE * excess
 
         for record in self._habits.values():

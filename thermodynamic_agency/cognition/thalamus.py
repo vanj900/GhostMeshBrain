@@ -175,8 +175,9 @@ class ThalamusGate:
 
         # Threat modulation: high threat boosts L1 (survival-focused attention),
         # suppresses L2 (prefrontal overridden by fight/flight).
-        if threat >= _THREAT_HIGH:
-            threat_excess = min(1.0, (threat - _THREAT_HIGH) / (1.0 - _THREAT_HIGH))
+        threat_range = 1.0 - _THREAT_HIGH
+        if threat >= _THREAT_HIGH and threat_range > 0.0:
+            threat_excess = min(1.0, (threat - _THREAT_HIGH) / threat_range)
             l1_prec = min(4.0, l1_prec + threat_excess * 1.2)
             l2_prec = max(0.3, l2_prec - threat_excess * 0.4)
 

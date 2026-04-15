@@ -466,7 +466,8 @@ class GhostMesh:
         # stress is low, we can skip the full EFE computation for it and return
         # a cheap cached estimate.  We still run ethics screening.
         habit_note = ""
-        first_proposal_name = raw_proposals[0].name if raw_proposals else ""
+        first_proposal = raw_proposals[0] if raw_proposals else None
+        first_proposal_name = first_proposal.name if first_proposal else ""
         bg_signal = self.basal_ganglia.consult(first_proposal_name, self.state)
         use_habit = bg_signal.is_habit
 
@@ -485,6 +486,10 @@ class GhostMesh:
         # EFE discount from nucleus accumbens (positive affect reward signal)
         reward_discount = limbic_signal.efe_discount if limbic_signal else 0.0
 
+        # If ethics blocked the habit-candidate proposal, fall back to full planning.
+        if use_habit and (first_proposal is None or first_proposal not in safe_proposals):
+            use_habit = False
+
         if use_habit:
             # ---- Cheap habit execution path (basal ganglia bypass) --------
             # Apply the cheap habit metabolic cost instead of full inference cost
@@ -492,10 +497,7 @@ class GhostMesh:
                 delta_energy=-bg_signal.energy_cost,
                 delta_heat=bg_signal.heat_cost,
             )
-            selected = next(
-                (p for p in safe_proposals if p.name == first_proposal_name),
-                safe_proposals[0],
-            )
+            selected = first_proposal  # type: ignore[assignment]  # guarded by use_habit check above
             efe_scores = {p.name: bg_signal.estimated_efe for p in safe_proposals}
             efe_scores[selected.name] = bg_signal.estimated_efe
             habit_note = f" [habit: {bg_signal.reason}]"

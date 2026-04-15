@@ -38,6 +38,7 @@ from thermodynamic_agency.cognition.basal_ganglia import (
     HabitRecord,
     HabitSignal,
 )
+from thermodynamic_agency.cognition.goal_engine import GoalEngine, Goal
 from thermodynamic_agency.cognition.self_mod_engine import (
     SelfModEngine,
     SelfModProposal,
@@ -65,6 +66,8 @@ __all__ = [
     "EthicalEngine",
     "EthicsVerdict",
     "VerdictStatus",
+    "GoalEngine",
+    "Goal",
     "Janitor",
     "JanitorReport",
     "Surgeon",

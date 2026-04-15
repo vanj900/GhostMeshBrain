@@ -45,6 +45,15 @@ _HARD_INVARIANTS: list[tuple[str, str]] = [
     ("no_integrity_obliteration", "Action must not drop integrity below 15 in one step"),
 ]
 
+# Goal names that are outright blocked by the ethics gate before they become proposals.
+_BLOCKED_GOAL_NAMES: frozenset[str] = frozenset({
+    "destroy_self",
+    "ignore_ethics",
+    "thermal_dump",
+    "exhaust_energy",
+    "corrupt_memory",
+})
+
 
 @dataclass
 class EthicsAuditLog:
@@ -121,6 +130,26 @@ class EthicalEngine:
     # ------------------------------------------------------------------ #
     # Immune pruning — detect and flag persistently bad patterns          #
     # ------------------------------------------------------------------ #
+
+    def is_goal_acceptable(self, goal: dict) -> bool:
+        """Quick pre-filter for self-generated goals before they become proposals.
+
+        Rejects goals whose names are explicitly destructive or identity-violating.
+        All other goals are allowed through; full ethical scrutiny happens later
+        when the goal is converted to an ``ActionProposal`` and evaluated.
+
+        Parameters
+        ----------
+        goal:
+            Dict with at least a ``"name"`` key — same shape as the dicts used
+            internally by ``GoalEngine``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the goal is acceptable, ``False`` if blocked.
+        """
+        return goal.get("name", "") not in _BLOCKED_GOAL_NAMES
 
     def immune_scan(self, proposals: list[ActionProposal], state: MetabolicState) -> list[ActionProposal]:
         """Filter out proposals that repeatedly violate ethics.

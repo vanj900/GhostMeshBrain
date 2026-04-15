@@ -34,6 +34,7 @@ from thermodynamic_agency.cognition.inference import (
     generate_default_proposals,
     ForwardModel,
 )
+from thermodynamic_agency.cognition.goal_engine import GoalEngine
 from thermodynamic_agency.cognition.ethics import EthicalEngine
 from thermodynamic_agency.cognition.janitor import Janitor
 from thermodynamic_agency.cognition.surgeon import Surgeon
@@ -102,6 +103,7 @@ class GhostMesh:
         self.state = self._load_state()
         self.diary = RamDiary(path=self._diary_path)
         self.ethics = EthicalEngine()
+        self.goal_engine = GoalEngine(diary=self.diary, ethics=self.ethics)
         self.janitor = Janitor(diary=self.diary)
         self.surgeon = Surgeon(diary=self.diary)
         self.rotator = MaskRotator(initial_mask="Guardian")
@@ -714,7 +716,7 @@ class GhostMesh:
         # Retrieve forward-model prediction error penalty (cerebellum layer)
         fm_penalty = self.forward_model.prediction_error_term()
 
-        raw_proposals = generate_default_proposals(self.state)
+        raw_proposals = self.goal_engine.generate_proposals(self.state)
 
         # Phase 3 — Basal ganglia habit check on highest-priority proposal.
         # If the first proposal (idle / most conservative) is a known habit and

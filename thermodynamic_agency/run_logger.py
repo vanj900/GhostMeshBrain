@@ -43,6 +43,8 @@ class TickRecord:
     stressor_event: str = ""    # description of environmental disturbance, or ""
     allostatic_load: float = 0.0  # accumulated allostatic load [0, 100]
     decide_streak: int = 0        # consecutive DECIDE ticks
+    self_mod_approved: int = 0    # Phase 4: self-mod proposals approved this tick
+    self_mod_blocked: int = 0     # Phase 4: self-mod proposals blocked this tick
 
 
 class RunLogger:
@@ -150,4 +152,6 @@ class RunLogger:
             "total_stressor_events": sum(
                 1 for r in self._records if r.stressor_event
             ),
+            "total_self_mod_approved": sum(r.self_mod_approved for r in self._records),
+            "total_self_mod_blocked": sum(r.self_mod_blocked for r in self._records),
         }

@@ -38,6 +38,22 @@ from thermodynamic_agency.cognition.basal_ganglia import (
     HabitRecord,
     HabitSignal,
 )
+from thermodynamic_agency.cognition.self_mod_engine import (
+    SelfModEngine,
+    SelfModProposal,
+    SelfModVerdict,
+    SelfModResult,
+    SelfModTarget,
+    PHASE4_MIN_TICKS,
+    PHASE4_MIN_HEALTH,
+    BELIEF_PRECISION_MIN,
+    DO_NO_HARM_FLOOR,
+    VALUE_WEIGHT_MIN,
+    VALUE_WEIGHT_MAX,
+    WATCHDOG_THRESHOLD,
+    WATCHDOG_WINDOW,
+    CHILL_TICKS,
+)
 
 __all__ = [
     "ActionProposal",
@@ -71,4 +87,18 @@ __all__ = [
     "BasalGanglia",
     "HabitRecord",
     "HabitSignal",
+    "SelfModEngine",
+    "SelfModProposal",
+    "SelfModVerdict",
+    "SelfModResult",
+    "SelfModTarget",
+    "PHASE4_MIN_TICKS",
+    "PHASE4_MIN_HEALTH",
+    "BELIEF_PRECISION_MIN",
+    "DO_NO_HARM_FLOOR",
+    "VALUE_WEIGHT_MIN",
+    "VALUE_WEIGHT_MAX",
+    "WATCHDOG_THRESHOLD",
+    "WATCHDOG_WINDOW",
+    "CHILL_TICKS",
 ]

@@ -39,6 +39,7 @@ from thermodynamic_agency.cognition.limbic import LimbicLayer
 from thermodynamic_agency.cognition.predictive_hierarchy import PredictiveHierarchy
 from thermodynamic_agency.cognition.thalamus import ThalamusGate
 from thermodynamic_agency.cognition.basal_ganglia import BasalGanglia
+from thermodynamic_agency.cognition.self_mod_engine import SelfModEngine, SelfModResult
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.interface.hud import print_hud
 from thermodynamic_agency.run_logger import RunLogger, TickRecord
@@ -81,6 +82,13 @@ class GhostMesh:
         self.hierarchy = PredictiveHierarchy()
         self.thalamus = ThalamusGate()
         self.basal_ganglia = BasalGanglia()
+        # Phase 4: constrained self-modification (unlocked at evolved stage)
+        self.self_mod_engine = SelfModEngine(
+            surgeon=self.surgeon,
+            ethics=self.ethics,
+            precision_engine=self.precision_engine,
+            diary=self.diary,
+        )
         self._running = False
         # Vitals log file handle (opened lazily on first write)
         self._vitals_fh = None
@@ -268,8 +276,9 @@ class GhostMesh:
                 threat_level=threat,
             )
 
-        # Dispatch action; _decide() returns ethics-blocks count
+        # Dispatch action; _decide() returns (ethics-blocks, self_mod_result)
         ethics_blocks = 0
+        self_mod_result: SelfModResult | None = None
         # Snapshot vitals before action for habit outcome recording
         _vitals_before = {
             "energy": self.state.energy,
@@ -285,11 +294,16 @@ class GhostMesh:
         elif action == "REPAIR":
             self._repair()
         else:  # "DECIDE"
-            ethics_blocks = self._decide(
+            ethics_blocks, self_mod_result = self._decide(
                 limbic_signal=limbic_signal,
                 hierarchy_signal=hierarchy_signal,
                 gate_report=gate_report,
             )
+
+        # Phase 4 — if self-mod blocked any proposals, run a Surgeon REPAIR
+        # pass immediately so the organism heals from its bad self-inspection.
+        if self_mod_result is not None and self_mod_result.forced_repair:
+            self._repair()
 
         # Phase 3 — Record habit outcome for the executed action token.
         # This lets the basal ganglia learn which metabolic actions reliably
@@ -333,6 +347,12 @@ class GhostMesh:
                 stressor_event=stressor_event,
                 allostatic_load=self.state.allostatic_load,
                 decide_streak=self.state.decide_streak,
+                self_mod_approved=(
+                    self_mod_result.approved_count if self_mod_result else 0
+                ),
+                self_mod_blocked=(
+                    self_mod_result.blocked_count if self_mod_result else 0
+                ),
             )
         )
 
@@ -399,7 +419,9 @@ class GhostMesh:
             )
         )
 
-    def _decide(self, limbic_signal=None, hierarchy_signal=None, gate_report=None) -> int:
+    def _decide(
+        self, limbic_signal=None, hierarchy_signal=None, gate_report=None
+    ) -> tuple[int, SelfModResult | None]:
         """Full active-inference planning cycle with thermodynamic precision cost.
 
         Parameters
@@ -418,8 +440,9 @@ class GhostMesh:
 
         Returns
         -------
-        int
-            Number of proposals blocked by the ethics gate this cycle.
+        tuple[int, SelfModResult | None]
+            (ethics_blocks, self_mod_result) where self_mod_result is None
+            unless the organism is at evolved stage and self-mod ran this tick.
         """
         # Tune precision weights based on current metabolic state.
         # The PrecisionEngine applies its own metabolic cost for sharpening attention.
@@ -597,7 +620,24 @@ class GhostMesh:
             delta_stability=delta.get("stability", 0.0),
         )
 
-        return ethics_blocks
+        # Phase 4 — Constrained self-modification.
+        # Proposals emerge from the hierarchy errors + thalamus channel weights
+        # + precision regime that were computed *this tick* inside DECIDE.
+        # Only runs at evolved stage; returns None otherwise.
+        self_mod_result: SelfModResult | None = None
+        if (
+            self.state.stage == "evolved"
+            and hierarchy_signal is not None
+            and gate_report is not None
+        ):
+            self_mod_result = self.self_mod_engine.attempt(
+                state=self.state,
+                hierarchy_signal=hierarchy_signal,
+                gate_report=gate_report,
+                precision_report=precision_report,
+            )
+
+        return ethics_blocks, self_mod_result
 
     # ------------------------------------------------------------------ #
     # Death handler                                                        #

@@ -20,6 +20,11 @@ import random
 import signal
 import sys
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from thermodynamic_agency.world.grid_world import GridWorld, WorldObservation
+    from thermodynamic_agency.learning.q_learner import QLearner
 
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.core.exceptions import GhostDeathException
@@ -42,6 +47,8 @@ from thermodynamic_agency.cognition.basal_ganglia import BasalGanglia
 from thermodynamic_agency.cognition.self_mod_engine import SelfModEngine, SelfModResult
 from thermodynamic_agency.cognition.genesis_reader import GenesisReader
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
+from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
+from thermodynamic_agency.memory.episodic_store import EpisodicStore
 from thermodynamic_agency.interface.hud import print_hud
 from thermodynamic_agency.run_logger import RunLogger, TickRecord
 
@@ -57,9 +64,31 @@ ENABLE_ENV_EVENTS = os.environ.get("GHOST_ENV_EVENTS", "1") == "1"
 
 
 class GhostMesh:
-    """The full thermodynamic organism."""
+    """The full thermodynamic organism.
 
-    def __init__(self, seed: int | None = None) -> None:
+    When *world* and *learner* are provided the organism operates in
+    two-level mode:
+
+    Level 1 — Survival regulation (unchanged):
+        MetabolicState.tick() drives FORAGE/REST/REPAIR/DECIDE as before.
+
+    Level 2 — External task (new):
+        Every ``_pulse()`` call also executes one world action selected by the
+        Q-learner.  World effects (e.g. gathering food → +energy) are applied
+        to the metabolic state, and the learner updates from the experience.
+        Working memory and the episodic store record every step so future
+        decisions can be biased by retrieved memories.
+
+    If *world* is None the organism behaves exactly as before — no learning
+    subsystems are initialised, and no existing behaviour changes.
+    """
+
+    def __init__(
+        self,
+        seed: int | None = None,
+        world: "GridWorld | None" = None,
+        learner: "QLearner | None" = None,
+    ) -> None:
         # Re-read env vars at construction time so tests/callers can override them.
         self._state_file = os.environ.get("GHOST_STATE_FILE", STATE_FILE)
         self._diary_path = os.environ.get("GHOST_DIARY_PATH", DIARY_PATH)
@@ -100,6 +129,30 @@ class GhostMesh:
         self._running = False
         # Vitals log file handle (opened lazily on first write)
         self._vitals_fh = None
+
+        # ── Level 2: functional memory (always initialised) ────────────── #
+        # Working memory and episodic store are lightweight in-memory
+        # structures that improve decision quality even without a world.
+        self.working_memory: WorkingMemory = WorkingMemory(capacity=30)
+        self.episodic_store: EpisodicStore = EpisodicStore(maxlen=5_000)
+
+        # ── Level 2: external world and learning subsystems (optional) ─── #
+        # These are only active when world + learner are provided by the caller
+        # (e.g. from EpisodeRunner).  None values are safe — all code paths
+        # that use them are gated with ``if self.world is not None``.
+        self.world: "GridWorld | None" = world
+        self.learner: "QLearner | None" = learner
+        if world is not None and learner is not None:
+            from thermodynamic_agency.learning.world_model import WorldModel
+            from thermodynamic_agency.learning.experience_buffer import ExperienceBuffer
+            self.world_model: "WorldModel | None" = WorldModel()
+            self.experience_buffer: "ExperienceBuffer | None" = ExperienceBuffer(seed=seed)
+            # Initialise world; store current observation
+            self._world_obs = world.get_observation()
+        else:
+            self.world_model = None
+            self.experience_buffer = None
+            self._world_obs = None
 
         # Optional stochastic environment stressor
         _stressor_prob = float(os.environ.get("GHOST_STRESSOR_PROB", "0.0"))
@@ -190,7 +243,14 @@ class GhostMesh:
                     delta_stability=env_event.delta_stability,
                 )
 
-        mask = self.rotator.active
+        # 1b. Level 2 world step — if a GridWorld is attached, select and
+        #     execute one world action this tick.  World effects are applied
+        #     to the metabolic state before the metabolic tick so the
+        #     organism's internal regulation can respond to them.
+        if self.world is not None and self.learner is not None:
+            self._world_step()
+
+
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
 
@@ -390,6 +450,150 @@ class GhostMesh:
     # ------------------------------------------------------------------ #
     # Action dispatchers                                                   #
     # ------------------------------------------------------------------ #
+
+    def _world_step(self) -> None:
+        """Execute one world step (Level 2 — external task layer).
+
+        Selects a world action using:
+        1. Episodic memory recommendation (if working memory shows declining
+           trend and episodic store has a suggestion).
+        2. World model fallback for novel (rarely-visited) states.
+        3. Q-learner ε-greedy selection (primary).
+
+        The world's metabolic delta is applied to self.state so the organism's
+        internal regulation can respond to the environment in the same tick.
+        Learning subsystems are updated from the experience.
+        """
+        from thermodynamic_agency.world.grid_world import WorldAction
+        from thermodynamic_agency.learning.reward import compute_reward
+        from thermodynamic_agency.learning.experience_buffer import Experience
+        from thermodynamic_agency.learning.q_learner import encode_state
+
+        assert self.world is not None
+        assert self.learner is not None
+
+        obs = self._world_obs or self.world.get_observation()
+        vitals_before = self.state.to_dict()
+        state_key = encode_state(vitals_before, obs)
+
+        available = [a.value for a in self.world.available_actions()]
+
+        # Memory-augmented action selection
+        action_str = self._select_world_action(state_key, available, obs)
+
+        world_result = self.world.step(WorldAction(action_str))
+
+        # Apply world effects to metabolic state
+        if world_result.metabolic_delta:
+            self.state.apply_action_feedback(**world_result.metabolic_delta)
+
+        vitals_after = self.state.to_dict()
+
+        # Compute reward signal
+        reward_sig = compute_reward(
+            vitals_before=vitals_before,
+            vitals_after=vitals_after,
+            gathered=world_result.gathered,
+            alive=True,
+        )
+        reward = reward_sig.total
+
+        # Update next observation
+        next_obs = world_result.observation or self.world.get_observation()
+        self._world_obs = next_obs
+        next_state_key = encode_state(vitals_after, next_obs)
+
+        # Update Q-learner
+        self.learner.update(
+            state_key, action_str, reward, next_state_key, done=False,
+            next_actions=available,
+        )
+
+        # Update world model
+        if self.world_model is not None:
+            self.world_model.update(state_key, action_str, reward, next_state_key)
+
+        # Update experience buffer
+        if self.experience_buffer is not None:
+            self.experience_buffer.push(
+                Experience(
+                    tick=self.state.entropy,
+                    state_key=state_key,
+                    action=action_str,
+                    reward=reward,
+                    next_state_key=next_state_key,
+                )
+            )
+
+        # Update working memory
+        self.working_memory.push(
+            WorkingMemorySlot(
+                tick=self.state.entropy,
+                state_key=state_key,
+                action=action_str,
+                reward=reward,
+                cell_type=world_result.cell_type,
+                metabolic_snapshot=vitals_after,
+            )
+        )
+
+        # Update episodic store
+        self.episodic_store.record(
+            tick=self.state.entropy,
+            state_key=state_key,
+            action=action_str,
+            reward=reward,
+            next_state_key=next_state_key,
+            outcome_vitals=vitals_after,
+        )
+
+        if world_result.gathered or world_result.metabolic_delta:
+            self.diary.append(
+                DiaryEntry(
+                    tick=self.state.entropy,
+                    role="action",
+                    content=(
+                        f"WORLD[{action_str}]: cell={world_result.cell_type} "
+                        f"gathered={world_result.gathered} "
+                        f"delta={world_result.metabolic_delta} "
+                        f"reward={reward:.3f}"
+                    ),
+                )
+            )
+
+    def _select_world_action(
+        self,
+        state_key: tuple,
+        available: list[str],
+        obs: "WorldObservation",
+    ) -> str:
+        """Memory-augmented world action selection.
+
+        Priority:
+        1. Novel state → world model's highest expected-reward action.
+        2. Declining reward trend → episodic store recommendation.
+        3. Default → Q-learner ε-greedy.
+        """
+        assert self.learner is not None
+
+        # Check if this state is novel (Q-learner has few visits)
+        q_visits = sum(
+            self.learner._visit_counts.get((state_key, a), 0) for a in available
+        )
+        if q_visits < 3 and self.world_model is not None:
+            model_action = self.world_model.best_action_by_model(state_key, available)
+            if model_action:
+                return model_action
+
+        # Declining trend → consult episodic memory
+        declining = self.working_memory.reward_trend() < -0.01
+        if declining:
+            ep_action = self.episodic_store.best_action_for_state(state_key)
+            if ep_action and ep_action in available:
+                return ep_action
+
+        # Default: Q-learner ε-greedy
+        return self.learner.select_action(state_key, available)
 
     def _forage(self) -> None:
         """Hunt for resources — lightweight refill."""

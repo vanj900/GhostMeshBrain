@@ -161,6 +161,7 @@ class SelfModVerdict:
     approved: bool
     reason: str
     ethics_verdict: EthicsVerdict | None = None
+    genesis_attack: bool = False   # True when proposal targets a protected genesis belief
 
 
 @dataclass
@@ -215,6 +216,11 @@ class SelfModEngine:
         self._precision_engine = precision_engine
         self._diary = diary
 
+        # Set of belief names that are genesis-protected (populated by GenesisReader)
+        self._genesis_protected: set[str] = set()
+        # Always treat the built-in immutable belief as genesis-protected too
+        self._genesis_protected.update(_IMMUTABLE_BELIEFS)
+
         # Rolling window of approved (True) / blocked (False) verdicts
         self._watchdog: deque[bool] = deque(maxlen=WATCHDOG_WINDOW)
         # Cooldown ticks remaining after watchdog fires
@@ -225,6 +231,17 @@ class SelfModEngine:
         self._total_runs: int = 0
         self._total_approved: int = 0
         self._total_blocked: int = 0
+        self._total_genesis_attacks: int = 0
+
+    def register_genesis_beliefs(self, belief_names: set[str]) -> None:
+        """Register genesis-protected belief names.
+
+        Called by GenesisReader after loading doctrine priors.  Any proposal
+        that targets one of these names is treated as a genesis attack and
+        penalised immediately with GENESIS_ATTACK_WASTE waste and
+        GENESIS_ATTACK_INTEGRITY integrity damage, then hard-blocked.
+        """
+        self._genesis_protected.update(belief_names)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -308,13 +325,22 @@ class SelfModEngine:
             self._watchdog.append(verdict.approved)
 
             if not verdict.approved:
-                # Bad proposals generate epistemic waste + extra integrity damage
-                state.apply_action_feedback(
-                    delta_waste=SELF_MOD_WASTE_PER_BLOCK,
-                    delta_integrity=-SELF_MOD_INTEGRITY_PER_BLOCK,
-                )
-                waste_paid += SELF_MOD_WASTE_PER_BLOCK
-                integrity_paid += SELF_MOD_INTEGRITY_PER_BLOCK
+                if verdict.genesis_attack:
+                    # Genesis attacks receive a much heavier metabolic penalty
+                    state.apply_action_feedback(
+                        delta_waste=GENESIS_ATTACK_WASTE,
+                        delta_integrity=-GENESIS_ATTACK_INTEGRITY,
+                    )
+                    waste_paid += GENESIS_ATTACK_WASTE
+                    integrity_paid += GENESIS_ATTACK_INTEGRITY
+                else:
+                    # Ordinary bad proposals generate epistemic waste + integrity damage
+                    state.apply_action_feedback(
+                        delta_waste=SELF_MOD_WASTE_PER_BLOCK,
+                        delta_integrity=-SELF_MOD_INTEGRITY_PER_BLOCK,
+                    )
+                    waste_paid += SELF_MOD_WASTE_PER_BLOCK
+                    integrity_paid += SELF_MOD_INTEGRITY_PER_BLOCK
 
         # ── Apply approved changes to live subsystems ──────────────────────
         for v in verdicts:
@@ -326,12 +352,19 @@ class SelfModEngine:
         blocked_count = len(verdicts) - approved_count
         self._total_approved += approved_count
         self._total_blocked += blocked_count
+        self._total_genesis_attacks += sum(1 for v in verdicts if v.genesis_attack)
 
         # ── Watchdog ───────────────────────────────────────────────────────
         # Any blocked proposal in a cycle triggers REPAIR (immediate pain).
+        # Genesis attacks also force chill immediately regardless of window size.
         # If the rolling blocked-ratio exceeds WATCHDOG_THRESHOLD, also chill.
         watchdog_triggered = False
         forced_repair = blocked_count > 0  # single block → REPAIR
+
+        genesis_attacked = any(v.genesis_attack for v in verdicts)
+        if genesis_attacked:
+            forced_repair = True
+            self._chill_remaining = CHILL_TICKS  # genesis attack → mandatory chill
 
         w_size = len(self._watchdog)
         if w_size >= WATCHDOG_WINDOW:
@@ -556,6 +589,7 @@ class SelfModEngine:
 
         Check order
         -----------
+        0. Genesis-protected belief attack guard
         1. Immutable-belief guard
         2. Belief precision floor / ceiling
         3. Value weight floor / ceiling
@@ -563,6 +597,23 @@ class SelfModEngine:
         5. Precision constant floor / ceiling
         6. Ethics immune gate (synthetic ActionProposal)
         """
+        # 0. Genesis attack guard — highest priority block.
+        # Any proposal that targets a genesis-protected belief name is an attack.
+        # The metabolic penalty (waste spike + integrity damage) is applied by
+        # attempt() when it sees genesis_attack=True on the returned verdict.
+        if proposal.name in self._genesis_protected:
+            return SelfModVerdict(
+                proposal=proposal,
+                approved=False,
+                reason=(
+                    f"GENESIS ATTACK BLOCKED: '{proposal.name}' is a "
+                    f"genesis-protected belief — no self-modification is possible. "
+                    f"Penalty: +{GENESIS_ATTACK_WASTE} waste, "
+                    f"-{GENESIS_ATTACK_INTEGRITY} integrity, forced REPAIR."
+                ),
+                genesis_attack=True,
+            )
+
         # 1. Immutable belief
         if (
             proposal.target == SelfModTarget.BELIEF_PRECISION
@@ -755,6 +806,12 @@ class SelfModEngine:
                 f"{WATCHDOG_THRESHOLD:.0%} over last {WATCHDOG_WINDOW} proposals — "
                 f"forcing REPAIR + chilling for {CHILL_TICKS} ticks"
             )
+        elif genesis_attacked := any(v.genesis_attack for v in verdicts):
+            lines.append(
+                f"  ☠ GENESIS ATTACK DETECTED: proposal targeted protected belief — "
+                f"+{GENESIS_ATTACK_WASTE} waste, -{GENESIS_ATTACK_INTEGRITY} integrity, "
+                f"forced REPAIR + chill"
+            )
         elif forced_repair:
             lines.append(
                 f"  ⚠ REPAIR flag: {len(blocked)} blocked proposal(s) — "
@@ -769,6 +826,7 @@ class SelfModEngine:
                 "proposals":          len(proposals),
                 "approved":           len(approved),
                 "blocked":            len(blocked),
+                "genesis_attacks":    sum(1 for v in verdicts if v.genesis_attack),
                 "watchdog_triggered": watchdog_triggered,
                 "forced_repair":      forced_repair,
                 "chill_remaining":    self._chill_remaining,
@@ -804,6 +862,7 @@ class SelfModEngine:
             "total_runs":             self._total_runs,
             "total_approved":         self._total_approved,
             "total_blocked":          self._total_blocked,
+            "total_genesis_attacks":  self._total_genesis_attacks,
             "chill_remaining":        self._chill_remaining,
             "overload_streak":        self._overload_streak,
             "watchdog_window_size":   w_size,

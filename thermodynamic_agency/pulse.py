@@ -40,6 +40,7 @@ from thermodynamic_agency.cognition.predictive_hierarchy import PredictiveHierar
 from thermodynamic_agency.cognition.thalamus import ThalamusGate
 from thermodynamic_agency.cognition.basal_ganglia import BasalGanglia
 from thermodynamic_agency.cognition.self_mod_engine import SelfModEngine, SelfModResult
+from thermodynamic_agency.cognition.genesis_reader import GenesisReader
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.interface.hud import print_hud
 from thermodynamic_agency.run_logger import RunLogger, TickRecord
@@ -88,6 +89,13 @@ class GhostMesh:
             ethics=self.ethics,
             precision_engine=self.precision_engine,
             diary=self.diary,
+        )
+        # Phase 4: Genesis Doctrine — load principles as protected priors,
+        # register with self_mod_engine, verify integrity each tick.
+        self.genesis_reader = GenesisReader(surgeon=self.surgeon, diary=self.diary)
+        self.genesis_reader.load()
+        self.self_mod_engine.register_genesis_beliefs(
+            self.genesis_reader.genesis_belief_names
         )
         self._running = False
         # Vitals log file handle (opened lazily on first write)
@@ -185,6 +193,26 @@ class GhostMesh:
         mask = self.rotator.active
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
+
+        # Phase 4 — Genesis integrity check: re-hash doctrine files every tick.
+        # If either file has been tampered with, force a REPAIR immediately and
+        # log the violation.  The organism cannot proceed with DECIDE while its
+        # core ethical foundation is compromised.
+        genesis_ok = self.genesis_reader.verify_integrity()
+        if not genesis_ok.all_ok:
+            self.diary.append(
+                DiaryEntry(
+                    tick=self.state.entropy,
+                    role="genesis",
+                    content=(
+                        f"GENESIS INTEGRITY FAILURE — {genesis_ok.details}. "
+                        f"Forcing hard REPAIR."
+                    ),
+                )
+            )
+            self._repair()
+            # Override action to REPAIR so the rest of _pulse() skips DECIDE
+            action = "REPAIR"
 
         # 2. Limbic processing — amygdala threat detection + accumbens reward.
         #    This runs after tick() so it can read the just-updated affect signal.

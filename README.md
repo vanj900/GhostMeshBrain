@@ -271,8 +271,8 @@ planning.  Every layer pays energy and heat to operate.
 | Prefrontal cortex | Hierarchical exec. masks | `cognition/personality.py` | ✅ implemented |
 | Ethics immune | Hard-invariant gate | `cognition/ethics.py` | ✅ complete |
 | Thalamus | Precision gating | `cognition/precision.py` | ✅ complete |
-| Basal ganglia | Habit / action loops | — | 🔜 Phase 3 |
-| Full hier. pred. coding | Layer-to-layer error passing | — | 🔜 Phase 3 |
+| Basal ganglia | Habit / action loops | `cognition/basal_ganglia.py` | ✅ implemented |
+| Full hier. pred. coding | Layer-to-layer error passing | `cognition/predictive_hierarchy.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -663,8 +663,9 @@ python -m pytest tests/ -v
 - **Phase 1 (complete):** MetabolicState + tick() + death exceptions + Janitor + Surgeon + active inference + ethics gate + personality masks + RAM diary + HUD + bash pulse
 - **Phase 2 (complete):** Surgeon with precision-locked annealing; ethics immune actively prunes bad priors; PrecisionEngine sweet-spot arousal
 - **Phase 2.5 (complete):** Brain layers 1–4 — hormone proxies (cortisol/dopamine), reticular arousal gate, limbic system (amygdala/accumbens/episodic buffer), cerebellum forward model, prefrontal hierarchical masks (DefaultMode/SalienceNet/CentralExec)
-- **Phase 3:** Full hierarchical predictive coding (lower layers send raw errors up, higher layers send predictions down); thalamus gating; basal ganglia habit loops
-- **Phase 4:** Scale to bigger models; constrained self-modification at `evolved` stage with full audit trail (see below)
+- **Phase 3 (complete):** Full hierarchical predictive coding (`cognition/predictive_hierarchy.py`); thalamus gating (`cognition/thalamus.py`); basal ganglia habit loops (`cognition/basal_ganglia.py`)
+- **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
+- **Phase 5 (in progress):** Stochastic hostile-window environment (`cognition/environment.py`); long-term memory (LTM) layer; CI/CD pipeline
 
 ### Self-modification constraints (Phase 4)
 
@@ -683,8 +684,8 @@ following before execution:
 | Blocked-ratio watchdog | If `audit.blocked_ratio()` exceeds 0.5 in a sliding window, the system enters `REPAIR` and suspends self-modification proposals until integrity is restored |
 
 These constraints make self-modification **auditable, reversible in intent,
-and structurally bounded**.  Phase 4 work will include a test suite that
-asserts none of the above invariants can be bypassed by any generated
+and structurally bounded**.  The phase-4 test suite (`tests/test_phase4.py`)
+asserts that none of the above invariants can be bypassed by any generated
 proposal.
 
 ---

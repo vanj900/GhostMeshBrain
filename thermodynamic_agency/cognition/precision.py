@@ -77,6 +77,9 @@ class PrecisionEngine:
 
     def __init__(self) -> None:
         self._weights: dict[str, float] = dict(BASE_PRECISION)
+        # Mutable per-instance base — the SelfModEngine (Phase 4) may adjust
+        # individual entries within [PRECISION_MIN, PRECISION_MAX].
+        self.base_precision: dict[str, float] = dict(BASE_PRECISION)
 
     # ------------------------------------------------------------------ #
     # Main interface                                                       #
@@ -143,7 +146,7 @@ class PrecisionEngine:
 
     def _dormant_weights(self) -> dict[str, float]:
         """Relax toward base precision — low metabolic cost."""
-        return {k: v * 0.8 for k, v in BASE_PRECISION.items()}
+        return {k: v * 0.8 for k, v in self.base_precision.items()}
 
     def _sweet_spot_weights(
         self,
@@ -163,14 +166,14 @@ class PrecisionEngine:
 
         # Boost precision on vitals that are furthest from setpoint
         weights: dict[str, float] = {}
-        for vital, base in BASE_PRECISION.items():
+        for vital, base in self.base_precision.items():
             deviation = self._vital_deviation(state, vital)
             boost = 1.0 + arousal * deviation * _AROUSAL_BOOST_SCALE
             weights[vital] = min(PRECISION_MAX, base * boost)
 
         # Positive affect (surprise resolving) slightly damps cost
         cost_scale = compute_load * (1.0 - 0.3 * max(0.0, affect))
-        total_boost = sum(w - b for w, b in zip(weights.values(), BASE_PRECISION.values()))
+        total_boost = sum(w - b for w, b in zip(weights.values(), self.base_precision.values()))
         energy_cost = max(0.0, total_boost * 0.04 * cost_scale)
         heat_cost = max(0.0, total_boost * 0.02 * cost_scale)
 
@@ -193,7 +196,7 @@ class PrecisionEngine:
         damp = 1.0 - 0.5 * overload_factor  # damp by up to 50%
 
         weights: dict[str, float] = {}
-        for vital, base in BASE_PRECISION.items():
+        for vital, base in self.base_precision.items():
             if vital in ("energy", "heat"):
                 # Keep survival precision high even under overload
                 weights[vital] = min(PRECISION_MAX, base * (1.0 + overload_factor))

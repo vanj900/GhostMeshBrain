@@ -24,6 +24,20 @@ from thermodynamic_agency.cognition.limbic import (
     NucleusAccumbens,
     EpisodicBuffer,
 )
+from thermodynamic_agency.cognition.predictive_hierarchy import (
+    PredictiveHierarchy,
+    HierarchySignal,
+    LayerBelief,
+)
+from thermodynamic_agency.cognition.thalamus import (
+    ThalamusGate,
+    GateReport,
+)
+from thermodynamic_agency.cognition.basal_ganglia import (
+    BasalGanglia,
+    HabitRecord,
+    HabitSignal,
+)
 
 __all__ = [
     "ActionProposal",
@@ -49,4 +63,12 @@ __all__ = [
     "AmygdalaModule",
     "NucleusAccumbens",
     "EpisodicBuffer",
+    "PredictiveHierarchy",
+    "HierarchySignal",
+    "LayerBelief",
+    "ThalamusGate",
+    "GateReport",
+    "BasalGanglia",
+    "HabitRecord",
+    "HabitSignal",
 ]

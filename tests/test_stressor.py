@@ -17,17 +17,14 @@ Coverage
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.cognition.environment import (
     EnvironmentStressor,
     _DISTURBANCE_TYPES,
-    _HW_ENTRY_PROB,
-    _HW_MIN_DURATION,
-    _HW_MAX_DURATION,
-    _HW_STRESSOR_MULTIPLIER,
-    _HW_INTENSITY_MULTIPLIER,
 )
 
 
@@ -290,17 +287,12 @@ class TestHostileWindowMode:
         # Ensure we are definitely outside a window
         s._in_hostile_window = False
         s._hostile_ticks_remaining = 0
-        # Also zero the entry probability temporarily via monkey-patch to prevent entry
-        import thermodynamic_agency.cognition.environment as env_mod
-        original = env_mod._HW_ENTRY_PROB
-        env_mod._HW_ENTRY_PROB = 0.0
-        try:
+        # Zero the entry probability to prevent window entry during this test
+        with patch("thermodynamic_agency.cognition.environment._HW_ENTRY_PROB", 0.0):
             for _ in range(50):
                 result = s.maybe_disturb(_fresh_state())
                 if result:
                     assert not result.startswith("[HOSTILE_WINDOW]"), result
-        finally:
-            env_mod._HW_ENTRY_PROB = original
 
     def test_window_expires_after_duration(self):
         """in_hostile_window returns False once the countdown reaches zero.
@@ -338,25 +330,20 @@ class TestHostileWindowMode:
         baseline_losses = []
         window_losses = []
 
-        import thermodynamic_agency.cognition.environment as env_mod
-
         # Baseline: force OUTSIDE window and collect energy losses
         s = EnvironmentStressor(prob=1.0, intensity=1.0, seed=7, mode="hostile_windows")
         s._in_hostile_window = False
-        original_entry = env_mod._HW_ENTRY_PROB
-        env_mod._HW_ENTRY_PROB = 0.0
-        try:
+        with patch("thermodynamic_agency.cognition.environment._HW_ENTRY_PROB", 0.0):
             for _ in range(200):
                 state = _fresh_state()
                 s.maybe_disturb(state)
                 baseline_losses.append(80.0 - state.energy)
-        finally:
-            env_mod._HW_ENTRY_PROB = original_entry
 
         # Window: force INSIDE window and collect energy losses
+        # Use a count large enough that the window never expires during this test
         s2 = EnvironmentStressor(prob=1.0, intensity=1.0, seed=7, mode="hostile_windows")
         s2._in_hostile_window = True
-        s2._hostile_ticks_remaining = 10_000  # never expires during this test
+        s2._hostile_ticks_remaining = 10_000  # effectively infinite for 200 iterations
         for _ in range(200):
             state = _fresh_state()
             s2.maybe_disturb(state)
@@ -370,7 +357,6 @@ class TestHostileWindowMode:
     def test_window_stressor_prob_multiplied(self):
         """Inside a window the effective prob is multiplied by _HW_STRESSOR_MULTIPLIER,
         so at prob=0.5 the window hit-rate should be higher than outside."""
-        import thermodynamic_agency.cognition.environment as env_mod
 
         def count_hits(in_window: bool, n: int = 1000) -> int:
             s = EnvironmentStressor(prob=0.5, seed=11, mode="hostile_windows")
@@ -379,17 +365,12 @@ class TestHostileWindowMode:
                 s._hostile_ticks_remaining = n + 1
             else:
                 s._in_hostile_window = False
-                # Prevent window entry
-            original_entry = env_mod._HW_ENTRY_PROB
-            env_mod._HW_ENTRY_PROB = 0.0
-            try:
+            with patch("thermodynamic_agency.cognition.environment._HW_ENTRY_PROB", 0.0):
                 hits = 0
                 for _ in range(n):
                     if s.maybe_disturb(_fresh_state()):
                         hits += 1
                 return hits
-            finally:
-                env_mod._HW_ENTRY_PROB = original_entry
 
         outside_hits = count_hits(in_window=False)
         inside_hits = count_hits(in_window=True)

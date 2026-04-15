@@ -53,6 +53,7 @@ class BeliefPrior:
     precision: float = 1.0          # inverse variance; higher = more rigid
     last_updated: float = field(default_factory=time.time)
     error_count: int = 0            # times this belief produced prediction errors
+    protected: bool = False         # if True, Surgeon will never anneal this prior
 
 
 @dataclass
@@ -181,9 +182,9 @@ class Surgeon:
         """Find beliefs that are overly rigid (high precision + high error rate)."""
         frozen = []
         for prior in self.priors:
-            # Heuristic: prior is "frozen" if precision is high AND it has
-            # generated errors, or if it hasn't been updated in a long time.
-            age_penalty = (time.time() - prior.last_updated) / 3600.0  # hours
+            if prior.protected:
+                continue  # genesis / immutable priors are never annealed
+            age_penalty = (time.time() - prior.last_updated) / 3600.0
             rigidity_score = prior.precision * (1 + prior.error_count) * (1 + age_penalty * 0.1)
             if rigidity_score > 2.5:
                 frozen.append(prior)

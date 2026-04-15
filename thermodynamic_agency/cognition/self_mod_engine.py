@@ -76,6 +76,17 @@ SELF_MOD_INTEGRITY_PER_PROPOSAL: float = 0.4  # additional per proposal attempte
 SELF_MOD_WASTE_PER_BLOCK: float = 2.5         # waste spike per blocked proposal
 SELF_MOD_INTEGRITY_PER_BLOCK: float = 0.6     # extra integrity damage per blocked proposal
 
+# ── Minimum per-attempt cost (on top of inference cost, per requirement) ──
+# These are lower-bounds; base costs above already exceed them.
+SELF_MOD_MIN_EXTRA_ENERGY: float = 0.25
+SELF_MOD_MIN_EXTRA_HEAT: float = 0.12
+SELF_MOD_MIN_EXTRA_INTEGRITY: float = 0.05
+
+# ── Genesis attack penalties ──
+# Any proposal targeting a genesis-protected belief is treated as an attack.
+GENESIS_ATTACK_WASTE: float = 15.0      # waste spike for attacking genesis
+GENESIS_ATTACK_INTEGRITY: float = 8.0  # integrity damage for attacking genesis
+
 # ── Hard bounds (non-bypassable) ──
 VALUE_WEIGHT_MIN: float = 0.1
 VALUE_WEIGHT_MAX: float = 2.0

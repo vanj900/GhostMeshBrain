@@ -77,6 +77,9 @@ class PrecisionEngine:
 
     def __init__(self) -> None:
         self._weights: dict[str, float] = dict(BASE_PRECISION)
+        # Mutable per-instance base — the SelfModEngine (Phase 4) may adjust
+        # individual entries within [PRECISION_MIN, PRECISION_MAX].
+        self.base_precision: dict[str, float] = dict(BASE_PRECISION)
 
     # ------------------------------------------------------------------ #
     # Main interface                                                       #

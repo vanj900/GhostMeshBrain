@@ -270,9 +270,16 @@ planning.  Every layer pays energy and heat to operate.
 | Cerebellum | Forward model + pred. error | `cognition/inference.py` | ✅ implemented |
 | Prefrontal cortex | Hierarchical exec. masks | `cognition/personality.py` | ✅ implemented |
 | Ethics immune | Hard-invariant gate | `cognition/ethics.py` | ✅ complete |
-| Thalamus | Precision gating | `cognition/precision.py` | ✅ complete |
+| Thalamus | Precision routing gate | `cognition/thalamus.py` | ✅ implemented |
 | Basal ganglia | Habit / action loops | `cognition/basal_ganglia.py` | ✅ implemented |
 | Full hier. pred. coding | Layer-to-layer error passing | `cognition/predictive_hierarchy.py` | ✅ implemented |
+| Goal engine | Self-generated motivational goals | `cognition/goal_engine.py` | ✅ implemented |
+| Genesis doctrine lock | Integrity-locked belief priors | `cognition/genesis_reader.py` | ✅ implemented |
+| Self-modification engine | Constrained belief-table updates | `cognition/self_mod_engine.py` | ✅ implemented |
+| Long-term episodic memory | Similarity-based experience recall | `memory/episodic_store.py` | ✅ implemented |
+| Working memory | Short-term recency queue | `memory/working_memory.py` | ✅ implemented |
+| GridWorld environment | Embodied navigation + resources/hazards | `world/grid_world.py` | ✅ implemented |
+| Q-learner | Tabular ε-greedy / UCB reinforcement learning | `learning/q_learner.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -307,22 +314,38 @@ Every new layer charges the organism's budget:
 
 thermodynamic_agency/
 ├── core/
-│   ├── exceptions.py   # Death exceptions (Energy/Thermal/Memory/Entropy)
-│   └── metabolic.py    # MetabolicState + tick() + hormone proxies (cortisol/dopamine)
+│   ├── exceptions.py        # Death exceptions (Energy/Thermal/Memory/Entropy)
+│   └── metabolic.py         # MetabolicState + tick() + hormone proxies (cortisol/dopamine)
 ├── cognition/
-│   ├── inference.py    # active_inference_step + compute_efe + ForwardModel
-│   ├── ethics.py       # EthicalEngine — immune system (non-bypassable gate)
-│   ├── janitor.py      # Waste management / context compression
-│   ├── surgeon.py      # Bayesian precision annealing / integrity repair
-│   ├── personality.py  # Personality masks (Healer/Judge/Courier/Dreamer/Guardian
-│   │                   #   + DefaultMode/SalienceNet/CentralExec prefrontal layer)
-│   ├── limbic.py       # Limbic system (AmygdalaModule/NucleusAccumbens/EpisodicBuffer)
-│   └── precision.py    # PrecisionEngine — dynamic attention tuning
+│   ├── inference.py         # active_inference_step + compute_efe + ForwardModel
+│   ├── ethics.py            # EthicalEngine — immune system (non-bypassable gate)
+│   ├── janitor.py           # Waste management / context compression
+│   ├── surgeon.py           # Bayesian precision annealing / integrity repair
+│   ├── personality.py       # Personality masks (Healer/Judge/Courier/Dreamer/Guardian
+│   │                        #   + DefaultMode/SalienceNet/CentralExec prefrontal layer)
+│   ├── limbic.py            # Limbic system (AmygdalaModule/NucleusAccumbens/EpisodicBuffer)
+│   ├── precision.py         # PrecisionEngine — dynamic attention tuning
+│   ├── thalamus.py          # ThalamusGate — precision routing between hierarchy layers
+│   ├── basal_ganglia.py     # Habit / action-loop reinforcement
+│   ├── predictive_hierarchy.py  # Full hierarchical predictive coding (L0→L1→L2)
+│   ├── goal_engine.py       # Self-generated motivational goals from metabolic state
+│   ├── genesis_reader.py    # Doctrine integrity lock — 7 genesis priors at precision 5.0
+│   └── self_mod_engine.py   # Constrained self-modification with audit trail
 ├── memory/
-│   └── diary.py        # RAM-ephemeral SQLite diary (/dev/shm)
+│   ├── diary.py             # RAM-ephemeral SQLite diary (/dev/shm)
+│   ├── episodic_store.py    # Long-term episodic memory — similarity-based recall
+│   └── working_memory.py    # Short-term recency queue for immediate decision support
+├── world/
+│   ├── grid_world.py        # 10×10 GridWorld with resources, hazards, and partial obs.
+│   └── episode_runner.py    # Multi-episode training harness (metabolic + world loops)
+├── learning/
+│   ├── q_learner.py         # Tabular Q-learning with ε-greedy / UCB exploration
+│   ├── experience_buffer.py # Fixed-capacity (s,a,r,s') replay buffer
+│   ├── world_model.py       # Tabular transition + reward model (model-based planning)
+│   └── reward.py            # Composite reward: survival + resource + hazard + internal
 ├── interface/
-│   └── hud.py          # ANSI terminal HUD renderer
-└── pulse.py            # Main heartbeat loop (GhostMesh orchestrator)
+│   └── hud.py               # ANSI terminal HUD renderer
+└── pulse.py                 # Main heartbeat loop (GhostMesh orchestrator)
 
 scripts/
 ├── ghostbrain.sh       # Bash pulse daemon
@@ -649,6 +672,98 @@ Observations from 500–5000 tick experiments:
 
 ---
 
+## Embodied World & Learning (Phase 5)
+
+GhostMesh can now operate inside a physical environment and learn from
+experience using reinforcement learning.  The two-level architecture keeps
+survival regulation and world interaction cleanly separated.
+
+### GridWorld
+
+`world/grid_world.py` is a 10×10 partially-observable grid.  The agent sees
+a 5×5 neighbourhood (radius 2) and navigates with six actions:
+
+| Action | Effect |
+|--------|--------|
+| `NORTH / SOUTH / EAST / WEST` | Move one cell |
+| `GATHER` | Collect the resource on the current cell |
+| `WAIT` | Stay in place (costs nothing) |
+
+Cell types and their metabolic effects on `GATHER` (or passive entry):
+
+| Cell | Effect |
+|------|--------|
+| `FOOD` | +15 energy (consumed; respawns after 20 ticks) |
+| `WATER` | −12 heat (consumed; respawns after 20 ticks) |
+| `MEDICINE` | +10 integrity (consumed; respawns after 25 ticks) |
+| `RADIATION` | +8 heat on entry (passive hazard) |
+| `TOXIN` | +10 waste on entry (passive hazard) |
+| `WALL` | Impassable |
+
+### Two-level architecture (EpisodeRunner)
+
+`world/episode_runner.py` runs the combined metabolic + world loop:
+
+1. **Level 1 — Survival regulation**: `MetabolicState.tick()` returns
+   `FORAGE / REST / REPAIR / DECIDE` each heartbeat.  The organism keeps
+   itself alive regardless of what is happening in the world.
+2. **Level 2 — External task**: every tick the Q-learner selects a world
+   action.  The world step applies a metabolic delta (e.g. eating food →
+   +energy) and returns a reward signal.
+
+```bash
+# Run 50 training episodes (100 ticks each) and print improvement ratio
+python -c "
+from thermodynamic_agency.world.episode_runner import EpisodeRunner
+runner = EpisodeRunner(n_episodes=50, ticks_per_episode=100, seed=42)
+stats = runner.train()
+print('improvement ratio:', stats.improvement_ratio)
+"
+```
+
+### Learning subsystem
+
+| Module | Role |
+|--------|------|
+| `learning/q_learner.py` | Tabular Q-learning with ε-greedy decay and optional UCB exploration bonus |
+| `learning/world_model.py` | Tabular transition + expected-reward model; supports model-based action selection and uncertainty estimation |
+| `learning/experience_buffer.py` | Fixed-capacity circular (s, a, r, s') replay buffer with uniform random sampling |
+| `learning/reward.py` | Composite reward: survival bonus + resource gain + hazard penalty + internal health delta |
+
+### Memory subsystem
+
+| Module | Role |
+|--------|------|
+| `memory/episodic_store.py` | Long-term episodic memory; Hamming-similarity retrieval of past (state, action, reward) tuples; `best_action_for_state()` and `risky_states()` APIs |
+| `memory/working_memory.py` | Short-term recency queue (default capacity 20); exposes `avg_recent_reward()`, `reward_trend()`, and `has_hazard_nearby_recently()` for per-tick planning |
+
+Before the Q-learner's ε-greedy selection, the episodic store and working
+memory are consulted.  If either recommends a specific action for the current
+state, it is added as an additional candidate — exploration is preserved
+because selection is still ε-greedy over the enriched set.
+
+### GoalEngine
+
+`cognition/goal_engine.py` generates self-motivated goals purely from the
+organism's own metabolic state, recent diary entries, and ethical values — no
+external task list required.  Goals are converted to `ActionProposal` objects
+compatible with the active-inference pipeline.
+
+Goal sources (in priority order):
+
+| Priority | Source | Example goal |
+|----------|--------|-------------|
+| 90 | Body — low energy | `forage_energy` |
+| 85 | Body — overheating | `cool_down` |
+| 80 | Body — high waste | `clean_waste` |
+| 70 | Body — low integrity | `run_surgeon` |
+| 65 | Memory — stress / negative affect | `reduce_surprise` |
+| 50 | Growth — curiosity | `explore_pattern` |
+| 45 | Growth — self-improvement | `strengthen_ethics` |
+| 60 | Long-term identity (stochastic) | `maintain_stability`, `protect_core_ethics` |
+
+---
+
 ## Tests
 
 ```bash
@@ -665,7 +780,8 @@ python -m pytest tests/ -v
 - **Phase 2.5 (complete):** Brain layers 1–4 — hormone proxies (cortisol/dopamine), reticular arousal gate, limbic system (amygdala/accumbens/episodic buffer), cerebellum forward model, prefrontal hierarchical masks (DefaultMode/SalienceNet/CentralExec)
 - **Phase 3 (complete):** Full hierarchical predictive coding (`cognition/predictive_hierarchy.py`); thalamus gating (`cognition/thalamus.py`); basal ganglia habit loops (`cognition/basal_ganglia.py`)
 - **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
-- **Phase 5 (in progress):** Stochastic hostile-window environment (`cognition/environment.py`); long-term memory (LTM) layer; CI/CD pipeline
+- **Phase 5 (complete):** Stochastic hostile-window environment (`cognition/environment.py`); goal engine (`cognition/goal_engine.py`); long-term episodic memory + working memory (`memory/episodic_store.py`, `memory/working_memory.py`); embodied GridWorld (`world/grid_world.py`); tabular Q-learner + world model + experience buffer (`learning/`)
+- **Phase 6 (planned):** CI/CD pipeline; multi-agent interaction; persistent cross-session memory; LLM-driven goal narration
 
 ### Self-modification constraints (Phase 4)
 

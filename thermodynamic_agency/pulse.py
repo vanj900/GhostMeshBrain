@@ -47,6 +47,9 @@ from thermodynamic_agency.cognition.thalamus import ThalamusGate
 from thermodynamic_agency.cognition.basal_ganglia import BasalGanglia
 from thermodynamic_agency.cognition.self_mod_engine import SelfModEngine, SelfModResult
 from thermodynamic_agency.cognition.genesis_reader import GenesisReader
+from thermodynamic_agency.cognition.counterfactual import CounterfactualEngine, CF_RISK_WEIGHT
+from thermodynamic_agency.cognition.language_cognition import LanguageCognition
+from thermodynamic_agency.cognition.homeostasis import HomeostasisAdapter
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
@@ -103,17 +106,31 @@ class GhostMesh:
         self.state = self._load_state()
         self.diary = RamDiary(path=self._diary_path)
         self.ethics = EthicalEngine()
-        self.goal_engine = GoalEngine(diary=self.diary, ethics=self.ethics)
+        # Language Cognition: opt-in LLM co-processor (off by default).
+        # Set GHOST_USE_LLM=1 to enable Ollama-backed proposal generation.
+        _use_llm = os.environ.get("GHOST_USE_LLM", "0") == "1"
+        self.language_cognition = LanguageCognition(diary=self.diary, use_llm=_use_llm)
+        self.goal_engine = GoalEngine(
+            diary=self.diary,
+            ethics=self.ethics,
+            language_cognition=self.language_cognition,
+        )
         self.janitor = Janitor(diary=self.diary)
         self.surgeon = Surgeon(diary=self.diary)
         self.rotator = MaskRotator(initial_mask="Guardian")
         self.precision_engine = PrecisionEngine()
         self.limbic = LimbicLayer()
         self.forward_model = ForwardModel()
-        # Phase 3: hierarchical predictive coding + thalamic routing + habit loops
-        self.hierarchy = PredictiveHierarchy()
+        # HomeostasisAdapter: slow hebbian setpoint drift with Genesis bounds.
+        self.homeostasis_adapter = HomeostasisAdapter()
+        # Phase 3: hierarchical predictive coding + thalamic routing + habit loops.
+        # Hierarchy receives the homeostasis adapter so its L2 top-down prior
+        # can drift toward the organism's long-run vital expectations.
+        self.hierarchy = PredictiveHierarchy(homeostasis=self.homeostasis_adapter)
         self.thalamus = ThalamusGate()
         self.basal_ganglia = BasalGanglia()
+        # CounterfactualEngine: DFS fear-based simulation for DECIDE steps.
+        self.counterfactual_engine = CounterfactualEngine()
         # Phase 4: constrained self-modification (unlocked at evolved stage)
         self.self_mod_engine = SelfModEngine(
             surgeon=self.surgeon,
@@ -255,6 +272,11 @@ class GhostMesh:
 
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
+
+        # Update HomeostasisAdapter with just-observed vitals.
+        # This must happen immediately after tick() so the adapted setpoints
+        # are fresh for the DECIDE step's EFE scoring this tick.
+        self.homeostasis_adapter.observe(self.state)
 
         # Phase 4 — Genesis integrity check: re-hash doctrine files every tick.
         # If either file has been tampered with, force a REPAIR immediately and
@@ -792,6 +814,39 @@ class GhostMesh:
             )
         else:
             # ---- Full active-inference planning path ----------------------
+            # ---- Counterfactual simulation (DFS fear-based pruning) -------
+            # Run the CounterfactualEngine BEFORE active_inference_step so
+            # terminal risk penalties can influence selection.  Hard-pruned
+            # branches (lethal within 2 ticks) cost almost nothing; the full
+            # 10-step cost is only paid for surviving trajectories.
+            cf_traces = self.counterfactual_engine.run_batch(self.state, safe_proposals)
+            cf_energy, cf_heat = self.counterfactual_engine.compute_metabolic_cost(cf_traces)
+            if cf_energy > 0 or cf_heat > 0:
+                self.state.apply_action_feedback(
+                    delta_energy=-cf_energy,
+                    delta_heat=cf_heat,
+                )
+            # Map proposal name → terminal_risk for post-selection adjustment
+            cf_risk: dict[str, float] = {t.proposal_name: t.terminal_risk for t in cf_traces}
+
+            # Log any lethal-zone discoveries (hard-pruned proposals) to diary
+            lethal_names = [
+                t.proposal_name for t in cf_traces if t.terminal_risk == 1.0
+            ]
+            if lethal_names:
+                self.diary.append(DiaryEntry(
+                    tick=self.state.entropy,
+                    role="thought",
+                    content=(
+                        f"COUNTERFACTUAL: lethal-zone detected for "
+                        f"{lethal_names!r} — fear-pruned at depth ≤ 2."
+                    ),
+                    metadata={"lethal_proposals": lethal_names},
+                ))
+
+            # Get adapted setpoints from HomeostasisAdapter for EFE scoring
+            adapted_sp = self.homeostasis_adapter.adapted_setpoints()
+
             # active_inference_step charges the cognitive cost of evaluating proposals
             result = active_inference_step(
                 self.state,
@@ -799,7 +854,31 @@ class GhostMesh:
                 precision_weights=precision_weights,
                 compute_load=self._compute_load,
                 reward_discount=reward_discount,
+                setpoints=adapted_sp,
             )
+
+            # Add counterfactual terminal-risk penalty to each proposal's EFE.
+            # This can change the selected proposal if the initial winner has a
+            # dangerous trajectory that the 5-step multistep EFE missed.
+            for name in result.efe_scores:
+                result.efe_scores[name] += cf_risk.get(name, 0.0) * CF_RISK_WEIGHT
+
+            # Re-select based on risk-adjusted scores
+            best_name = min(result.efe_scores, key=lambda k: result.efe_scores[k])
+            if best_name != result.selected.name:
+                # Counterfactual changed the selection — find matching proposal.
+                # Fall back to original selection if no match (should not occur
+                # in normal operation but guards against StopIteration).
+                override = next(
+                    (p for p in safe_proposals if p.name == best_name),
+                    result.selected,
+                )
+                result = result.__class__(
+                    selected=override,
+                    efe_scores=result.efe_scores,
+                    reasoning=result.reasoning + f" [CF→{best_name}]",
+                    inference_cost=result.inference_cost,
+                )
             selected = result.selected
 
             # Add hierarchical EFE penalty to each proposal's score
@@ -814,6 +893,10 @@ class GhostMesh:
                 f"KL={cost.kl_complexity:.1f} prec={cost.precision_used:.2f}]"
                 if cost else ""
             )
+            cf_str = (
+                f" cf_risk={cf_risk.get(selected.name, 0.0):.2f}"
+                if cf_risk else ""
+            )
             fm_str = f" fm_penalty={fm_penalty:.3f}" if fm_penalty > 0 else ""
             hier_str = (
                 f" hier_efe_penalty={hier_efe_penalty:.3f}"
@@ -827,7 +910,7 @@ class GhostMesh:
                     content=(
                         f"DECIDE: selected '{selected.name}' "
                         f"(EFE={efe_scores[selected.name]:.2f}). "
-                        f"{result.reasoning} {cost_str}{fm_str}{hier_str}"
+                        f"{result.reasoning} {cost_str}{cf_str}{fm_str}{hier_str}"
                     ),
                     metadata={
                         "mask": self.rotator.active.name,
@@ -840,6 +923,7 @@ class GhostMesh:
                         "fm_penalty": fm_penalty,
                         "habit": False,
                         "hier_efe_penalty": hier_efe_penalty,
+                        "cf_risk": cf_risk.get(selected.name, 0.0),
                     },
                 )
             )

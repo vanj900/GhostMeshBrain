@@ -124,7 +124,9 @@ def _apply_delta(
         if k in result:
             result[k] = result[k] + v
     result["energy"]    = max(result["energy"],    -1.0)
-    result["heat"]      = min(result["heat"],      110.0)
+    # Allow heat slightly above THERMAL_DEATH_THRESHOLD so the simulation can
+    # detect the crossing — same headroom as MetabolicState.tick() (110.0).
+    result["heat"]      = min(result["heat"],      THERMAL_DEATH_THRESHOLD + 10.0)
     result["integrity"] = max(result["integrity"],   0.0)
     result["stability"] = max(result["stability"],  -1.0)
     result["waste"]     = max(result["waste"],       0.0)

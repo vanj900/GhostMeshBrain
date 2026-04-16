@@ -552,53 +552,32 @@ class TestHomeostasisAdapterWithInference:
 # ================================================================== #
 
 class TestPulseIntegration:
-    def test_ghostmesh_initialises_new_subsystems(self, tmp_path):
-        import os
-        os.environ["GHOST_STATE_FILE"] = str(tmp_path / "state.json")
-        os.environ["GHOST_DIARY_PATH"] = str(tmp_path / "diary.db")
-        os.environ["GHOST_HUD"] = "0"
-        os.environ["GHOST_ENV_EVENTS"] = "0"
-        try:
-            from thermodynamic_agency.pulse import GhostMesh
-            mesh = GhostMesh(seed=0)
-            assert hasattr(mesh, "counterfactual_engine")
-            assert hasattr(mesh, "language_cognition")
-            assert hasattr(mesh, "homeostasis_adapter")
-        finally:
-            del os.environ["GHOST_STATE_FILE"]
-            del os.environ["GHOST_DIARY_PATH"]
-            del os.environ["GHOST_HUD"]
-            del os.environ["GHOST_ENV_EVENTS"]
+    def test_ghostmesh_initialises_new_subsystems(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GHOST_STATE_FILE", str(tmp_path / "state.json"))
+        monkeypatch.setenv("GHOST_DIARY_PATH", str(tmp_path / "diary.db"))
+        monkeypatch.setenv("GHOST_HUD", "0")
+        monkeypatch.setenv("GHOST_ENV_EVENTS", "0")
+        from thermodynamic_agency.pulse import GhostMesh
+        mesh = GhostMesh(seed=0)
+        assert hasattr(mesh, "counterfactual_engine")
+        assert hasattr(mesh, "language_cognition")
+        assert hasattr(mesh, "homeostasis_adapter")
 
-    def test_ghostmesh_runs_three_ticks_without_error(self, tmp_path):
-        import os
-        os.environ["GHOST_STATE_FILE"] = str(tmp_path / "state.json")
-        os.environ["GHOST_DIARY_PATH"] = str(tmp_path / "diary.db")
-        os.environ["GHOST_HUD"] = "0"
-        os.environ["GHOST_ENV_EVENTS"] = "0"
-        try:
-            from thermodynamic_agency.pulse import GhostMesh
-            mesh = GhostMesh(seed=42)
-            mesh.run(max_ticks=3)
-        finally:
-            del os.environ["GHOST_STATE_FILE"]
-            del os.environ["GHOST_DIARY_PATH"]
-            del os.environ["GHOST_HUD"]
-            del os.environ["GHOST_ENV_EVENTS"]
+    def test_ghostmesh_runs_three_ticks_without_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GHOST_STATE_FILE", str(tmp_path / "state.json"))
+        monkeypatch.setenv("GHOST_DIARY_PATH", str(tmp_path / "diary.db"))
+        monkeypatch.setenv("GHOST_HUD", "0")
+        monkeypatch.setenv("GHOST_ENV_EVENTS", "0")
+        from thermodynamic_agency.pulse import GhostMesh
+        mesh = GhostMesh(seed=42)
+        mesh.run(max_ticks=3)
 
-    def test_homeostasis_adapts_after_ticks(self, tmp_path):
-        import os
-        os.environ["GHOST_STATE_FILE"] = str(tmp_path / "state.json")
-        os.environ["GHOST_DIARY_PATH"] = str(tmp_path / "diary.db")
-        os.environ["GHOST_HUD"] = "0"
-        os.environ["GHOST_ENV_EVENTS"] = "0"
-        try:
-            from thermodynamic_agency.pulse import GhostMesh
-            mesh = GhostMesh(seed=42)
-            mesh.run(max_ticks=5)
-            assert mesh.homeostasis_adapter.status().ticks_observed == 5
-        finally:
-            del os.environ["GHOST_STATE_FILE"]
-            del os.environ["GHOST_DIARY_PATH"]
-            del os.environ["GHOST_HUD"]
-            del os.environ["GHOST_ENV_EVENTS"]
+    def test_homeostasis_adapts_after_ticks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GHOST_STATE_FILE", str(tmp_path / "state.json"))
+        monkeypatch.setenv("GHOST_DIARY_PATH", str(tmp_path / "diary.db"))
+        monkeypatch.setenv("GHOST_HUD", "0")
+        monkeypatch.setenv("GHOST_ENV_EVENTS", "0")
+        from thermodynamic_agency.pulse import GhostMesh
+        mesh = GhostMesh(seed=42)
+        mesh.run(max_ticks=5)
+        assert mesh.homeostasis_adapter.status().ticks_observed == 5

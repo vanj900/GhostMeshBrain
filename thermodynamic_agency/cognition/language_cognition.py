@@ -481,6 +481,17 @@ class LanguageCognition:
         and is stored in ``self._pending_cost`` so the caller can charge state.
         Raises on network / HTTP errors so the caller can fall back gracefully.
         """
+        # Validate URL scheme to prevent SSRF via a malicious OLLAMA_URL value.
+        # Only http/https are allowed; the default and recommended value is
+        # http://localhost:11434 (loopback only).
+        from urllib.parse import urlparse
+        parsed = urlparse(self._ollama_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"OLLAMA_URL has disallowed scheme '{parsed.scheme}'. "
+                "Only 'http' and 'https' are permitted."
+            )
+
         prompt_chars = len(prompt)
         energy_cost = prompt_chars * _LLM_ENERGY_PER_CHAR
         heat_cost   = prompt_chars * _LLM_HEAT_PER_CHAR

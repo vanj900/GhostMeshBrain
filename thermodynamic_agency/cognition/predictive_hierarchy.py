@@ -393,8 +393,10 @@ class PredictiveHierarchy:
         extrapolated: dict[str, float] = {}
         for v in _VITALS:
             raw = self._l2.predictions[v] + smoothed[v]
-            # Soft homeostatic pull: nudge toward adapted setpoint
-            sp = pull_targets.get(v, _PREFRONTAL_SETPOINTS[v])
+            # Soft homeostatic pull: nudge toward adapted setpoint.
+            # pull_targets always contains all vitals (guaranteed by
+            # HomeostasisAdapter.adapted_setpoints() contract).
+            sp = pull_targets[v]
             pull = 0.05 * (sp - raw)
             extrapolated[v] = raw + pull
 

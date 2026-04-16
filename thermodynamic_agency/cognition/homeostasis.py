@@ -149,10 +149,9 @@ class HomeostasisAdapter:
         for v in _VITALS:
             initial = _INITIAL_SETPOINTS[v]
             max_drift = abs(initial) * self._max_drift_fraction
-            # Pull toward EMA (which itself drifts slowly toward observations)
+            # Pull toward EMA, then clamp to Genesis Doctrine bound.
             raw = self._ema[v]
-            # Clamp drift around the original baseline
-            adapted = max(initial - max_drift, min(initial + max_drift, raw))
+            adapted = min(max(raw, initial - max_drift), initial + max_drift)
             result[v] = adapted
         return result
 

@@ -866,9 +866,15 @@ class GhostMesh:
             # Re-select based on risk-adjusted scores
             best_name = min(result.efe_scores, key=lambda k: result.efe_scores[k])
             if best_name != result.selected.name:
-                # Counterfactual changed the selection
+                # Counterfactual changed the selection — find matching proposal.
+                # Fall back to original selection if no match (should not occur
+                # in normal operation but guards against StopIteration).
+                override = next(
+                    (p for p in safe_proposals if p.name == best_name),
+                    result.selected,
+                )
                 result = result.__class__(
-                    selected=next(p for p in safe_proposals if p.name == best_name),
+                    selected=override,
                     efe_scores=result.efe_scores,
                     reasoning=result.reasoning + f" [CF→{best_name}]",
                     inference_cost=result.inference_cost,

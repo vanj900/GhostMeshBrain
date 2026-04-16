@@ -96,6 +96,7 @@ class _AgentState:
     world: GridWorld
     learner: QLearner
     obs: WorldObservation
+    pos: tuple[int, int] = field(default=(1, 1))
     alive: bool = True
     ticks_alive: int = 0
     total_reward: float = 0.0
@@ -156,11 +157,8 @@ class MultiAgentRunner:
             width=world_width,
             height=world_height,
             seed=seed,
+            allow_respawn=respawn,
         )
-
-        # Disable respawn by patching the timers list if not wanted.
-        if not respawn:
-            self._arena._respawn_disabled = True
 
         self._agents: list[_AgentState] = []
 
@@ -228,9 +226,8 @@ class MultiAgentRunner:
                 world=self._arena,  # all agents share the same arena object
                 learner=learner,
                 obs=obs,
+                pos=pos,
             )
-            # Store each agent's position separately since GridWorld is single-agent
-            agent._pos = pos  # type: ignore[attr-defined]
             self._agents.append(agent)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -249,7 +246,7 @@ class MultiAgentRunner:
         for agent in self._agents:
             if not agent.alive:
                 continue
-            self._arena._agent_pos = agent._pos  # type: ignore[attr-defined]
+            self._arena._agent_pos = agent.pos
             available = [a.value for a in self._arena.available_actions()]
             vitals = agent.mesh.state.to_dict()
             state_key = encode_state(vitals, agent.obs)
@@ -261,7 +258,7 @@ class MultiAgentRunner:
         for agent_id, action_str in intentions:
             if action_str == WorldAction.GATHER.value:
                 agent = self._agents[agent_id]
-                pos = agent._pos  # type: ignore[attr-defined]
+                pos = agent.pos
                 cell = self._arena._cell_at(pos)
                 if cell in _GATHERABLE:
                     if pos not in gather_claims:
@@ -311,14 +308,14 @@ class MultiAgentRunner:
             # Movement — compute new position without using arena step()
             from thermodynamic_agency.world.grid_world import _MOVEMENT_DELTA, _ENTRY_EFFECTS, _merge_delta
             dx, dy = _MOVEMENT_DELTA[action_str]
-            cx, cy = agent._pos  # type: ignore[attr-defined]
+            cx, cy = agent.pos
             candidate = (cx + dx, cy + dy)
             if self._arena._is_valid_move(candidate):
                 # Check no other agent occupies the target cell
-                occupied = {a._pos for a in self._agents if a.alive and a.agent_id != agent.agent_id}  # type: ignore[attr-defined]
+                occupied = {a.pos for a in self._agents if a.alive and a.agent_id != agent.agent_id}
                 if candidate not in occupied:
-                    agent._pos = candidate  # type: ignore[attr-defined]
-                    cell = self._arena._cell_at(agent._pos)  # type: ignore[attr-defined]
+                    agent.pos = candidate
+                    cell = self._arena._cell_at(agent.pos)
                     _merge_delta(metabolic_delta, _ENTRY_EFFECTS.get(cell, {}))
 
             if metabolic_delta:
@@ -327,7 +324,7 @@ class MultiAgentRunner:
 
         elif action_str == WorldAction.GATHER.value:
             from thermodynamic_agency.world.grid_world import _GATHER_EFFECTS, _merge_delta
-            pos = agent._pos  # type: ignore[attr-defined]
+            pos = agent.pos
 
             if gather_claims.get(pos) == agent.agent_id:
                 # We won the claim race — gather the resource
@@ -408,9 +405,9 @@ class MultiAgentRunner:
 
         # Update observation with social context
         other_positions = self._other_positions(
-            agent.agent_id, agent._pos  # type: ignore[attr-defined]
+            agent.agent_id, agent.pos
         )
-        self._arena._agent_pos = agent._pos  # type: ignore[attr-defined]
+        self._arena._agent_pos = agent.pos
         next_obs = self._arena.get_observation(other_agent_positions=other_positions)
         agent.obs = next_obs
 
@@ -429,7 +426,7 @@ class MultiAgentRunner:
 
         # Q-learner update
         next_state_key = encode_state(vitals_after, next_obs)
-        self._arena._agent_pos = agent._pos  # type: ignore[attr-defined]
+        self._arena._agent_pos = agent.pos
         next_available = [a.value for a in self._arena.available_actions()]
         agent.learner.update(
             state_key, action_str, reward, next_state_key,
@@ -447,7 +444,7 @@ class MultiAgentRunner:
     ) -> list[tuple[int, int]]:
         """Return positions of all *other* living agents."""
         return [
-            a._pos  # type: ignore[attr-defined]
+            a.pos
             for a in self._agents
             if a.alive and a.agent_id != my_id
         ]

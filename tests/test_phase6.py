@@ -374,12 +374,12 @@ def test_multi_agent_resource_contention():
 
     # Place both agents on the food cell
     for agent in runner._agents:
-        agent._pos = food_pos  # type: ignore[attr-defined]
+        agent.pos = food_pos  # type: ignore[attr-defined]
 
     # Both intend to GATHER
     gather_claims: dict = {}
     for i, agent in enumerate(runner._agents):
-        pos = agent._pos  # type: ignore[attr-defined]
+        pos = agent.pos  # type: ignore[attr-defined]
         cell = arena._cell_at(pos)
         if cell in _GATHERABLE:
             if pos not in gather_claims:

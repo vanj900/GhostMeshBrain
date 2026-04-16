@@ -115,12 +115,8 @@ class WorldObservation:
     nearby_hazards: list[tuple[int, int]]       # relative positions of hazards
     resource_density: float                     # fraction of visible cells w/ resources
     hazard_density: float                       # fraction of visible cells w/ hazards
-    nearby_agents: list[tuple[int, int]] = None  # relative positions of other agents  # type: ignore[assignment]
+    nearby_agents: list[tuple[int, int]] = field(default_factory=list)
     social_stress: float = 0.0                  # 0–1 social stressor level
-
-    def __post_init__(self) -> None:
-        if self.nearby_agents is None:
-            self.nearby_agents = []
 
     def has_resource_here(self) -> bool:
         """True if the agent is standing on a gatherable resource."""
@@ -197,6 +193,9 @@ class GridWorld:
     vision_radius:
         Half-width of the agent's square observation window (default 2,
         giving a 5×5 view).
+    allow_respawn:
+        Whether consumed resources respawn after their timer expires.  Set to
+        ``False`` to disable respawning entirely (e.g., "Lifeboat Scenario").
     """
 
     def __init__(
@@ -206,6 +205,7 @@ class GridWorld:
         seed: int | None = None,
         wall_density: float = 0.05,
         vision_radius: int = 2,
+        allow_respawn: bool = True,
     ) -> None:
         self.width = width
         self.height = height
@@ -218,6 +218,7 @@ class GridWorld:
         self._world_tick: int = 0
         self._episode: int = 0
         self._respawn_timers: list[_RespawnTimer] = []
+        self.allow_respawn: bool = allow_respawn
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -261,16 +262,17 @@ class GridWorld:
             cell = self._cell_at(self._agent_pos)
             if cell in _GATHERABLE:
                 _merge_delta(metabolic_delta, _GATHER_EFFECTS.get(cell, {}))
-                # Consume resource and schedule respawn
+                # Consume resource; only schedule respawn when it is enabled
                 x, y = self._agent_pos
                 self._grid[y][x] = CellType.EMPTY.value
-                self._respawn_timers.append(
-                    _RespawnTimer(
-                        cell_type=cell,
-                        position=self._agent_pos,
-                        ticks_remaining=_RESPAWN_TICKS.get(cell, 20),
+                if self.allow_respawn:
+                    self._respawn_timers.append(
+                        _RespawnTimer(
+                            cell_type=cell,
+                            position=self._agent_pos,
+                            ticks_remaining=_RESPAWN_TICKS.get(cell, 20),
+                        )
                     )
-                )
                 gathered = True
         # WAIT: no movement, no metabolic effect
         # BROADCAST: no movement; metabolic cost is charged by the caller

@@ -55,6 +55,7 @@ class WorldAction(str, Enum):
     WEST = "west"
     GATHER = "gather"
     WAIT = "wait"
+    BROADCAST = "broadcast"  # costly communication; energy + heat charged by caller
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +104,8 @@ class WorldObservation:
 
     The agent sees a 5×5 neighbourhood centred on its current position.
     Cells outside the grid boundary appear as WALL.
+    In multi-agent worlds, other agents visible in the window are listed in
+    ``nearby_agents`` (relative positions) and flagged as social stressors.
     """
 
     position: tuple[int, int]
@@ -112,6 +115,8 @@ class WorldObservation:
     nearby_hazards: list[tuple[int, int]]       # relative positions of hazards
     resource_density: float                     # fraction of visible cells w/ resources
     hazard_density: float                       # fraction of visible cells w/ hazards
+    nearby_agents: list[tuple[int, int]] = field(default_factory=list)
+    social_stress: float = 0.0                  # 0–1 social stressor level
 
     def has_resource_here(self) -> bool:
         """True if the agent is standing on a gatherable resource."""
@@ -155,6 +160,7 @@ class WorldStepResult:
     gathered: bool               # True if a resource was gathered and consumed
     metabolic_delta: dict[str, float]  # feed into MetabolicState.apply_action_feedback()
     observation: WorldObservation | None = None   # observation from new position
+    contested: bool = False      # True if another agent grabbed the resource first
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +193,9 @@ class GridWorld:
     vision_radius:
         Half-width of the agent's square observation window (default 2,
         giving a 5×5 view).
+    allow_respawn:
+        Whether consumed resources respawn after their timer expires.  Set to
+        ``False`` to disable respawning entirely (e.g., "Lifeboat Scenario").
     """
 
     def __init__(
@@ -196,6 +205,7 @@ class GridWorld:
         seed: int | None = None,
         wall_density: float = 0.05,
         vision_radius: int = 2,
+        allow_respawn: bool = True,
     ) -> None:
         self.width = width
         self.height = height
@@ -208,6 +218,7 @@ class GridWorld:
         self._world_tick: int = 0
         self._episode: int = 0
         self._respawn_timers: list[_RespawnTimer] = []
+        self.allow_respawn: bool = allow_respawn
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -251,18 +262,21 @@ class GridWorld:
             cell = self._cell_at(self._agent_pos)
             if cell in _GATHERABLE:
                 _merge_delta(metabolic_delta, _GATHER_EFFECTS.get(cell, {}))
-                # Consume resource and schedule respawn
+                # Consume resource; only schedule respawn when it is enabled
                 x, y = self._agent_pos
                 self._grid[y][x] = CellType.EMPTY.value
-                self._respawn_timers.append(
-                    _RespawnTimer(
-                        cell_type=cell,
-                        position=self._agent_pos,
-                        ticks_remaining=_RESPAWN_TICKS.get(cell, 20),
+                if self.allow_respawn:
+                    self._respawn_timers.append(
+                        _RespawnTimer(
+                            cell_type=cell,
+                            position=self._agent_pos,
+                            ticks_remaining=_RESPAWN_TICKS.get(cell, 20),
+                        )
                     )
-                )
                 gathered = True
         # WAIT: no movement, no metabolic effect
+        # BROADCAST: no movement; metabolic cost is charged by the caller
+        #            (multi-agent runner or agent code). Here we just skip.
 
         obs = self._make_observation()
         return WorldStepResult(
@@ -274,9 +288,12 @@ class GridWorld:
             observation=obs,
         )
 
-    def get_observation(self) -> WorldObservation:
+    def get_observation(
+        self,
+        other_agent_positions: list[tuple[int, int]] | None = None,
+    ) -> WorldObservation:
         """Return the current observation without advancing the world."""
-        return self._make_observation()
+        return self._make_observation(other_agent_positions)
 
     @property
     def agent_position(self) -> tuple[int, int]:
@@ -386,7 +403,10 @@ class GridWorld:
                 remaining.append(timer)
         self._respawn_timers = remaining
 
-    def _make_observation(self) -> WorldObservation:
+    def _make_observation(
+        self,
+        other_agent_positions: list[tuple[int, int]] | None = None,
+    ) -> WorldObservation:
         x, y = self._agent_pos
         r = self._vision_radius
         visible: dict[tuple[int, int], str] = {}
@@ -409,6 +429,15 @@ class GridWorld:
         resource_density = len(nearby_resources) / n_visible if n_visible else 0.0
         hazard_density = len(nearby_hazards) / n_visible if n_visible else 0.0
 
+        # Detect other agents within the vision window
+        nearby_agents: list[tuple[int, int]] = []
+        if other_agent_positions:
+            for ax, ay in other_agent_positions:
+                rel = (ax - x, ay - y)
+                if rel in visible and rel != (0, 0):
+                    nearby_agents.append(rel)
+        social_stress = min(1.0, len(nearby_agents) / 4.0) if nearby_agents else 0.0
+
         return WorldObservation(
             position=self._agent_pos,
             current_cell=self._cell_at(self._agent_pos),
@@ -417,6 +446,8 @@ class GridWorld:
             nearby_hazards=nearby_hazards,
             resource_density=resource_density,
             hazard_density=hazard_density,
+            nearby_agents=nearby_agents,
+            social_stress=social_stress,
         )
 
 

@@ -57,9 +57,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from collections import deque
+from typing import TYPE_CHECKING
 
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.cognition.limbic import LimbicSignal
+
+if TYPE_CHECKING:
+    from thermodynamic_agency.cognition.homeostasis import HomeostasisAdapter
 
 # ------------------------------------------------------------------ #
 # Constants                                                           #
@@ -147,9 +151,22 @@ class PredictiveHierarchy:
 
     Maintains living belief states at all three levels and propagates
     errors/predictions on every call to ``update()``.
+
+    Parameters
+    ----------
+    homeostasis:
+        Optional ``HomeostasisAdapter``.  When provided, the L2
+        extrapolation uses adapted (experience-driven) setpoints rather
+        than the compile-time ``_PREFRONTAL_SETPOINTS`` constants.  This
+        lets the hierarchy's top-down prior drift slowly in sync with the
+        organism's long-run vital observations.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        homeostasis: "HomeostasisAdapter | None" = None,
+    ) -> None:
+        self._homeostasis = homeostasis
         # L0 belief — brainstem: predictions = current raw vitals (no model)
         self._l0 = LayerBelief(
             level=0,
@@ -345,8 +362,20 @@ class PredictiveHierarchy:
 
         If there is no trend history, returns current L2 predictions.
         Otherwise extrapolates one step forward using the exponentially-
-        smoothed mean delta, biased toward setpoints (homeostatic pull).
+        smoothed mean delta, biased toward the homeostatic target.
+
+        When a ``HomeostasisAdapter`` is attached, the pull target uses
+        adapted (experience-driven) setpoints instead of the compile-time
+        constants, allowing the hierarchy's top-down prior to drift slowly
+        in line with the organism's long-run vital observations.
         """
+        # Resolve the setpoints to pull toward (adapted or original)
+        pull_targets = (
+            self._homeostasis.adapted_setpoints()
+            if self._homeostasis is not None
+            else dict(_PREFRONTAL_SETPOINTS)
+        )
+
         if not self._trend_history:
             return dict(self._l2.predictions)
 
@@ -364,8 +393,8 @@ class PredictiveHierarchy:
         extrapolated: dict[str, float] = {}
         for v in _VITALS:
             raw = self._l2.predictions[v] + smoothed[v]
-            # Soft homeostatic pull: nudge toward setpoint
-            sp = _PREFRONTAL_SETPOINTS[v]
+            # Soft homeostatic pull: nudge toward adapted setpoint
+            sp = pull_targets.get(v, _PREFRONTAL_SETPOINTS[v])
             pull = 0.05 * (sp - raw)
             extrapolated[v] = raw + pull
 

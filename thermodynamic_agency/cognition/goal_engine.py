@@ -22,6 +22,7 @@ from thermodynamic_agency.cognition.inference import ActionProposal
 if TYPE_CHECKING:
     from thermodynamic_agency.memory.diary import RamDiary
     from thermodynamic_agency.cognition.ethics import EthicalEngine
+    from thermodynamic_agency.cognition.language_cognition import LanguageCognition
 
 
 # ------------------------------------------------------------------ #
@@ -123,10 +124,12 @@ class GoalEngine:
         diary: "RamDiary",
         ethics: "EthicalEngine",
         seed: int | None = None,
+        language_cognition: "LanguageCognition | None" = None,
     ) -> None:
         self.diary = diary
         self.ethics = ethics
         self._rng = random.Random(seed)
+        self.language_cognition = language_cognition
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -265,6 +268,25 @@ class GoalEngine:
                 cost_energy=cost,
                 metadata={"goal_priority": goal.priority, "goal_reason": goal.reason},
             ))
+
+        # ---- Language Cognition: optional LLM-driven novel proposals --------
+        # Only activated when a LanguageCognition instance is attached and the
+        # organism is not in a survival emergency (energy > 35 and heat < 75).
+        # The LLM selects from the hard-coded archetype catalogue so numeric
+        # deltas remain physics-controlled; only the archetype selection is
+        # language-guided.  Proposals are deduplicated against existing ones.
+        if (
+            self.language_cognition is not None
+            and state.energy > 35
+            and state.heat < 75
+        ):
+            lc_proposals = self.language_cognition.generate_proposals(
+                state, goals, self.ethics
+            )
+            for lc_p in lc_proposals:
+                if lc_p.name not in seen_names:
+                    proposals.append(lc_p)
+                    seen_names.add(lc_p.name)
 
         if not proposals:
             # Absolute fallback so inference never receives an empty list

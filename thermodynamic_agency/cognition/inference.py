@@ -233,12 +233,30 @@ def _decay_vitals_one_step(
     }
 
 
-def _accuracy_term(vitals: dict[str, float], precision: dict[str, float]) -> float:
-    """Precision-weighted squared deviation from setpoints (accuracy term)."""
+def _accuracy_term(
+    vitals: dict[str, float],
+    precision: dict[str, float],
+    setpoints: dict[str, float] | None = None,
+) -> float:
+    """Precision-weighted squared deviation from setpoints (accuracy term).
+
+    Parameters
+    ----------
+    vitals:
+        Current (simulated) vital values.
+    precision:
+        Per-vital precision (inverse variance) weights.
+    setpoints:
+        Optional adapted setpoints from ``HomeostasisAdapter``.  When
+        provided these replace the module-level ``_SETPOINT`` constants,
+        allowing the organism's notion of "normal" to drift slowly over
+        time.  Defaults to ``_SETPOINT`` when ``None``.
+    """
+    sp = setpoints if setpoints is not None else _SETPOINT
     total = 0.0
-    for vital, setpoint in _SETPOINT.items():
+    for vital, setpoint in sp.items():
         p = precision.get(vital, 1.0)
-        total += p * (vitals[vital] - setpoint) ** 2
+        total += p * (vitals.get(vital, setpoint) - setpoint) ** 2
     return total
 
 
@@ -284,6 +302,7 @@ def compute_multistep_efe(
     precision_weights: dict[str, float] | None = None,
     horizon: int = _HORIZON,
     gamma: float = _GAMMA,
+    setpoints: dict[str, float] | None = None,
 ) -> float:
     """Compute multi-step Expected Free Energy via a short forward rollout.
 
@@ -305,6 +324,11 @@ def compute_multistep_efe(
         Number of future ticks to simulate (default 5).
     gamma:
         Temporal discount factor (default 0.92; recent ticks weighted more).
+    setpoints:
+        Optional adapted setpoints from ``HomeostasisAdapter``.  When
+        provided, the organism's long-run vital expectations are used in the
+        accuracy term instead of the compile-time ``_SETPOINT`` constants.
+        Defaults to ``_SETPOINT`` when ``None``.
 
     Returns
     -------
@@ -333,7 +357,7 @@ def compute_multistep_efe(
     discount = 1.0
     for _ in range(1, horizon + 1):
         vitals = _decay_vitals_one_step(vitals, allostatic_load=allostatic_load)
-        accuracy = _accuracy_term(vitals, precision)
+        accuracy = _accuracy_term(vitals, precision, setpoints=setpoints)
         risk = _risk_term(vitals)
         wear = _wear_term(allostatic_load)
         total += discount * (accuracy + complexity_per_tick + risk + wear)
@@ -426,6 +450,7 @@ def active_inference_step(
     precision_weights: dict[str, float] | None = None,
     compute_load: float = _DEFAULT_COMPUTE_LOAD,
     reward_discount: float = 0.0,
+    setpoints: dict[str, float] | None = None,
 ) -> InferenceResult:
     """Select the action with the lowest EFE from a list of proposals.
 
@@ -447,6 +472,10 @@ def active_inference_step(
         Fractional discount applied to all EFE scores (0–0.2).  Supplied by
         NucleusAccumbens when affect is positive — makes all policies
         relatively cheaper, biasing toward exploratory behaviour.
+    setpoints:
+        Optional adapted setpoints from ``HomeostasisAdapter``.  Passed
+        through to ``compute_multistep_efe`` so that the organism's slowly
+        drifting vital expectations are reflected in EFE scoring.
 
     Returns
     -------
@@ -469,7 +498,7 @@ def active_inference_step(
         # Adjust predicted delta for the energy cost of the action itself
         delta = dict(p.predicted_delta)
         delta["energy"] = delta.get("energy", 0.0) - p.cost_energy
-        raw_efe = compute_multistep_efe(state, delta, precision_weights)
+        raw_efe = compute_multistep_efe(state, delta, precision_weights, setpoints=setpoints)
         # Apply reward discount from nucleus accumbens (positive affect bonus)
         scores[p.name] = raw_efe * (1.0 - max(0.0, min(0.2, reward_discount)))
 

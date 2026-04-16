@@ -55,6 +55,19 @@ from thermodynamic_agency.cognition.self_mod_engine import (
     WATCHDOG_WINDOW,
     CHILL_TICKS,
 )
+from thermodynamic_agency.cognition.counterfactual import (
+    CounterfactualEngine,
+    CounterfactualTrace,
+    CF_RISK_WEIGHT,
+)
+from thermodynamic_agency.cognition.language_cognition import (
+    LanguageCognition,
+    LanguageCognitionReport,
+)
+from thermodynamic_agency.cognition.homeostasis import (
+    HomeostasisAdapter,
+    HomeostasisStatus,
+)
 
 __all__ = [
     "ActionProposal",
@@ -104,4 +117,14 @@ __all__ = [
     "WATCHDOG_THRESHOLD",
     "WATCHDOG_WINDOW",
     "CHILL_TICKS",
+    # Feature 1: CounterfactualEngine
+    "CounterfactualEngine",
+    "CounterfactualTrace",
+    "CF_RISK_WEIGHT",
+    # Feature 2: LanguageCognition
+    "LanguageCognition",
+    "LanguageCognitionReport",
+    # Feature 3: HomeostasisAdapter
+    "HomeostasisAdapter",
+    "HomeostasisStatus",
 ]

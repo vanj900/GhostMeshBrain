@@ -17,6 +17,12 @@ hazard:
 internal:
     Small signal proportional to change in aggregate health score.  Ties
     the external reward to the organism's internal well-being.
+competition:
+    Penalty when another agent captures a contested resource first
+    (multi-agent worlds only).
+cooperation:
+    Bonus when agents share resources, demonstrably lowering group VFE
+    (multi-agent worlds only).
 death:
     Large negative reward (−10) on agent death.
 """
@@ -34,7 +40,16 @@ class RewardSignal:
     resource: float = 0.0
     hazard: float = 0.0
     internal: float = 0.0
+    competition: float = 0.0
+    cooperation: float = 0.0
     total: float = 0.0
+
+
+# Competition penalty charged to the agent that *lost* the resource race.
+COMPETITION_PENALTY: float = -0.5
+
+# Cooperation bonus per group VFE unit reduced when an agent shares.
+COOPERATION_BONUS_PER_VFE_UNIT: float = 0.02
 
 
 def compute_reward(
@@ -42,6 +57,8 @@ def compute_reward(
     vitals_after: dict[str, float],
     gathered: bool,
     alive: bool = True,
+    contested: bool = False,
+    shared_vfe_delta: float = 0.0,
 ) -> RewardSignal:
     """Compute the composite reward for one world step.
 
@@ -56,6 +73,12 @@ def compute_reward(
         Whether a resource was successfully gathered this step.
     alive:
         Whether the agent is still alive (False → death penalty).
+    contested:
+        Whether another agent captured a resource the agent was trying to
+        gather (competition penalty applied when True).
+    shared_vfe_delta:
+        Reduction in group-level free energy resulting from cooperative
+        sharing this tick.  Positive values yield a cooperation bonus.
 
     Returns
     -------
@@ -97,7 +120,18 @@ def compute_reward(
     health_after = _health_score(vitals_after)
     sig.internal = (health_after - health_before) * 0.01
 
-    sig.total = sig.survival + sig.resource + sig.hazard + sig.internal
+    # Competition penalty — losing a resource race to another agent
+    if contested:
+        sig.competition = COMPETITION_PENALTY
+
+    # Cooperation bonus — measurable reduction in group-level VFE from sharing
+    if shared_vfe_delta > 0.0:
+        sig.cooperation = shared_vfe_delta * COOPERATION_BONUS_PER_VFE_UNIT
+
+    sig.total = (
+        sig.survival + sig.resource + sig.hazard + sig.internal
+        + sig.competition + sig.cooperation
+    )
     return sig
 
 

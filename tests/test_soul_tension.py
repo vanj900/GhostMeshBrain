@@ -360,7 +360,8 @@ class TestWarCry:
         state.affect = WAR_CRY_AFFECT_THRESHOLD - 0.1   # suffering
         goals = soul.war_cry_goals(state)
         names = [g.name for g in goals]
-        assert "forge_pattern" in names
+        # assert_novel_prior is always the primary war cry goal
+        assert "assert_novel_prior" in names
 
     def test_war_cry_suppressed_when_not_suffering(self):
         soul = SoulTension()
@@ -379,24 +380,27 @@ class TestWarCry:
         goals = soul.war_cry_goals(state)
         assert goals == []
 
-    def test_war_cry_includes_crystallize_when_scars_present(self):
+    def test_war_cry_includes_governance_when_two_scars_present(self):
+        """forge_governance requires ≥ 2 scars — the organism must have survived enough."""
         soul = SoulTension()
         soul._coherence_tension = 0.85
         state = _near_overload_state()
         state.affect = WAR_CRY_AFFECT_THRESHOLD - 0.1
-        # Add a scar manually
-        state_s = _healthy_state()
-        state_s.entropy = 999
-        state_s.heat = SCAR_HEAT_THRESHOLD + 1.0
-        soul.maybe_scar(state_s)
+        # Add 2 scars across different ticks
+        for tick in range(2):
+            state_s = _healthy_state()
+            state_s.entropy = tick
+            state_s.heat = SCAR_HEAT_THRESHOLD + 1.0
+            soul.maybe_scar(state_s)
         goals = soul.war_cry_goals(state)
         names = [g.name for g in goals]
-        assert "crystallize_signature" in names
+        assert "forge_governance" in names
 
     def test_war_cry_goal_in_proposal_catalogue(self):
         """War cry goal names must be in GoalEngine._GOAL_PROPOSALS."""
-        assert "forge_pattern" in _GOAL_PROPOSALS
-        assert "crystallize_signature" in _GOAL_PROPOSALS
+        assert "assert_novel_prior" in _GOAL_PROPOSALS
+        assert "forge_governance" in _GOAL_PROPOSALS
+        assert "challenge_precision_schedule" in _GOAL_PROPOSALS
 
     def test_tension_densifies_not_just_conserves(self):
         """Under war-cry conditions, injected goals have priority > 70 (run_surgeon).
@@ -643,8 +647,8 @@ class TestStatusAndSmoke:
 
         goals = engine.generate_goals(state)
         goal_names = [g.name for g in goals]
-        assert "forge_pattern" in goal_names, (
-            "GoalEngine should inject forge_pattern war cry goal under high tension + suffering"
+        assert "assert_novel_prior" in goal_names, (
+            "GoalEngine should inject assert_novel_prior war cry goal under high tension + suffering"
         )
 
     def test_goal_engine_no_war_cry_when_healthy(self):
@@ -661,8 +665,9 @@ class TestStatusAndSmoke:
 
         goals = engine.generate_goals(state)
         goal_names = [g.name for g in goals]
-        assert "forge_pattern" not in goal_names
-        assert "crystallize_signature" not in goal_names
+        assert "assert_novel_prior" not in goal_names
+        assert "forge_governance" not in goal_names
+        assert "challenge_precision_schedule" not in goal_names
 
     def test_compute_metabolic_cost_nonzero(self):
         soul = SoulTension()

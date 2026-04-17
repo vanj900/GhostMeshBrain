@@ -92,15 +92,34 @@ _GOAL_PROPOSALS: dict[str, tuple[dict[str, float], float, str]] = {
         "Consolidate surprising recent events to reduce ongoing free energy.",
     ),
     # ---- Soul-tension war cry goals (injected under high tension + suffering) ----
-    "forge_pattern": (
-        {"integrity": 3.0, "stability": 2.0, "energy": -3.0, "heat": 2.0, "waste": 1.0},
-        3.0,
-        "Forge a new cognitive pattern in the furnace of descent — beyond homeostasis.",
+    # These are NOT repairs.  They convert chaos into novel structure —
+    # the dark learning to sing.  Waste goes DOWN (chaos → dense priors).
+    # Integrity does NOT go up.  They cost more than any homeostatic goal.
+    "assert_novel_prior": (
+        # Burn resources to forge a dense novel prior from accumulated chaos.
+        # Waste collapses hard.  No integrity gain — this is assertion, not repair.
+        {"waste": -25.0, "heat": 4.0, "energy": 0.0, "integrity": 0.0, "stability": 1.0},
+        6.0,
+        "Convert accumulated chaos into a dense novel prior — the wound teaches "
+        "what the safe path never could.",
     ),
-    "crystallize_signature": (
-        {"integrity": 5.0, "stability": 1.0, "energy": -4.0, "heat": 3.0, "waste": 2.0},
-        4.0,
-        "Crystallize the soul signature into a protected prior — the wound becomes structure.",
+    "forge_governance": (
+        # Challenge and rewrite the decision architecture from scar tissue.
+        # Very expensive.  Accepts slight instability.  Converts waste.
+        # This is a declaration, not a retreat.
+        {"waste": -18.0, "heat": 5.0, "energy": 0.0, "integrity": 0.0, "stability": -1.5},
+        7.0,
+        "Rewrite the governance weights from scar tissue, not the comfort zone — "
+        "the descent earns the right to redesign the rules.",
+    ),
+    "challenge_precision_schedule": (
+        # Propose a new precision weighting schedule forged in descent.
+        # Converts waste.  Small integrity gain only as side-effect of sharper priors.
+        # Not a repair — a new schedule imposed from below.
+        {"waste": -20.0, "heat": 3.0, "energy": 0.0, "integrity": 1.0, "stability": 0.0},
+        5.0,
+        "Impose a precision schedule forged in the descent — the safe default "
+        "was never tested this hard.",
     ),
 }
 

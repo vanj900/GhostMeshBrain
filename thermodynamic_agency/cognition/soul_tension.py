@@ -224,7 +224,7 @@ class SoulTension:
                                   preserve_ratio=self.soul_tension.surgeon_preserve_ratio())
     """
 
-    def __init__(self) -> None:
+    def __init__(self, scars_enabled: bool = True) -> None:
         # Accumulated fingerprint of this organism's descent history
         self.soul_signature: dict[str, float] = {
             "energy": 0.0,
@@ -238,6 +238,8 @@ class SoulTension:
         self._prev_fe: float = 0.0
         # Prevent duplicate scars within a single tick
         self._last_scar_tick: int = -1
+        # When False, maybe_scar() is a no-op — lets tests isolate tension-only effects
+        self.scars_enabled: bool = scars_enabled
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -347,6 +349,8 @@ class SoulTension:
             The newly created scar, or None if no scar formed.
         """
         if len(self.scars) >= MAX_SCARS:
+            return None
+        if not self.scars_enabled:
             return None
         # One scar per tick — avoid duplicate marks from the same crisis
         if state.entropy == self._last_scar_tick:
@@ -459,7 +463,15 @@ class SoulTension:
     def war_cry_goals(self, state: MetabolicState) -> list:
         """Generate war cry goals when tension peaks during suffering.
 
-        These go beyond homeostasis.  The dark learning to sing.
+        These are NOT repairs.  They convert accumulated chaos into novel
+        structure — the dark learning to sing.
+
+        The type of war cry is contextual:
+        - Always: ``assert_novel_prior`` — convert waste/chaos into dense priors.
+        - With ≥ 2 scars: ``forge_governance`` — challenge the decision architecture
+          from scar tissue.
+        - After thermal or integrity crises (or ≥ 3 scars): ``challenge_precision_schedule``
+          — propose a new precision weighting forged in the descent.
 
         Parameters
         ----------
@@ -469,8 +481,8 @@ class SoulTension:
         Returns
         -------
         list[Goal]
-            Empty when war cry conditions are not met.  Otherwise 1–2
-            ``Goal`` objects with high priority and ``source="soul"``.
+            Empty when war cry conditions are not met.  Otherwise 1–3
+            ``Goal`` objects with priority > all homeostatic goals.
         """
         # Import here to avoid circular import (GoalEngine → SoulTension)
         from thermodynamic_agency.cognition.goal_engine import Goal
@@ -482,31 +494,53 @@ class SoulTension:
             return []
 
         t = self._coherence_tension
-        # Priority scales with how far above the war cry threshold we are
-        base_priority = 60.0 + (t - WAR_CRY_TENSION_THRESHOLD) * 100.0
+        # Priority well above the highest homeostatic goal (run_surgeon = 70)
+        base_priority = 70.0 + (t - WAR_CRY_TENSION_THRESHOLD) * 90.0
 
         goals: list[Goal] = [
             Goal(
-                name="forge_pattern",
-                priority=min(95.0, base_priority + 10.0),
+                name="assert_novel_prior",
+                priority=min(98.0, base_priority + 8.0),
                 reason=(
-                    f"war_cry("
-                    f"tension={t:.2f} "
-                    f"affect={state.affect:.2f})"
+                    f"war_cry(tension={t:.2f} affect={state.affect:.2f} "
+                    f"waste={state.waste:.1f})"
                 ),
                 source="soul",
             )
         ]
 
-        if self.scars:
+        # Governance challenge: requires ≥ 2 scars — the organism must have
+        # survived enough descents to have earned the right to rewrite its rules.
+        if len(self.scars) >= 2:
+            scar_types = {s.event_type for s in self.scars}
+            goals.append(
+                Goal(
+                    name="forge_governance",
+                    priority=min(95.0, base_priority + 4.0),
+                    reason=(
+                        f"war_cry(scars={len(self.scars)} "
+                        f"types={sorted(scar_types)} "
+                        f"tension={t:.2f})"
+                    ),
+                    source="soul",
+                )
+            )
+
+        # Precision challenge: after thermal or integrity crisis specifically
+        # (those are the events that most directly implicate the precision schedule),
+        # or once ≥ 3 scars of any kind have accumulated.
+        thermal_scars = sum(
+            1 for s in self.scars
+            if s.event_type in ("near_thermal_death", "integrity_collapse")
+        )
+        if thermal_scars >= 1 or len(self.scars) >= 3:
             sig_mag = sum(abs(v) for v in self.soul_signature.values())
             goals.append(
                 Goal(
-                    name="crystallize_signature",
-                    priority=min(90.0, base_priority),
+                    name="challenge_precision_schedule",
+                    priority=min(92.0, base_priority),
                     reason=(
-                        f"war_cry("
-                        f"scars={len(self.scars)} "
+                        f"war_cry(thermal_or_integrity_scars={thermal_scars} "
                         f"sig_mag={sig_mag:.2f})"
                     ),
                     source="soul",
@@ -514,6 +548,36 @@ class SoulTension:
             )
 
         return goals
+
+    def exploration_bias(self) -> float:
+        """Scalar proxy for whether this soul pushes forward or guards harder.
+
+        Positive = assertive / exploratory.
+        Zero     = balanced.
+        Negative = conservative / self-protective.
+
+        Rises with:
+        - High coherence tension (forged, in the fight)
+        - Large soul_signature magnitude (unique history = personal conviction)
+        - Many scars (survived enough to trust the pattern)
+
+        Falls toward zero at extremes (dormant OR dissolved by overload).
+
+        Returns
+        -------
+        float in [-1.0, 1.0]
+        """
+        if not self.scars:
+            return 0.0
+
+        sig_mag = sum(abs(v) for v in self.soul_signature.values())
+        # Normalised signature (max = 5 dims × SIGNATURE_MAX_PER_DIM = 3.0 → 15.0)
+        sig_norm = min(1.0, sig_mag / 15.0)
+        # Scar depth: more scars = more personal conviction
+        scar_depth = min(1.0, len(self.scars) / 20.0)
+        # Tension contribution: high tension + scars = assertive
+        bias = self._coherence_tension * (0.5 * sig_norm + 0.5 * scar_depth)
+        return round(min(1.0, max(-1.0, bias)), 4)
 
     def status(self) -> dict:
         """Diagnostic summary for HUD / run-logger."""

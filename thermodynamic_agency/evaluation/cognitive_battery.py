@@ -161,7 +161,7 @@ class CognitiveBattery:
         """Run all six tasks and return a :class:`TaskScores` result."""
         # Reset eval RNG so repeated calls to evaluate() on the same battery
         # instance are fully reproducible for a given seed.
-        self._eval_rng = _random.Random(self.seed)
+        self._eval_rng.seed(self.seed)
         return TaskScores(
             navigation=self._nav_efficiency(),
             puzzle=self._puzzle_solving(),

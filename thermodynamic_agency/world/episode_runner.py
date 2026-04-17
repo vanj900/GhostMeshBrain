@@ -61,6 +61,8 @@ from thermodynamic_agency.learning.world_model import WorldModel
 from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
 from thermodynamic_agency.pulse import GhostMesh
+from thermodynamic_agency.evaluation.cognitive_battery import CognitiveBattery, TaskScores
+from thermodynamic_agency.evaluation.g_factor import GFactorResult, measure_g
 
 
 @dataclass
@@ -76,6 +78,7 @@ class EpisodeStats:
     survived: bool
     final_health: float
     epsilon: float
+    task_scores: TaskScores | None = None   # set after battery evaluation
 
 
 @dataclass
@@ -83,6 +86,7 @@ class TrainingStats:
     """Aggregate statistics across all episodes."""
 
     episodes: list[EpisodeStats] = field(default_factory=list)
+    g_history: list[GFactorResult] = field(default_factory=list)  # one entry per batch
 
     def avg_reward_first_n(self, n: int = 10) -> float:
         subset = self.episodes[:n]
@@ -114,6 +118,11 @@ class TrainingStats:
     def total_episodes(self) -> int:
         return len(self.episodes)
 
+    @property
+    def latest_g(self) -> GFactorResult | None:
+        """Most recent g-factor measurement, or None if none yet."""
+        return self.g_history[-1] if self.g_history else None
+
 
 class EpisodeRunner:
     """Orchestrates multi-episode training of GhostMesh in a GridWorld.
@@ -144,9 +153,13 @@ class EpisodeRunner:
         epsilon: float = 0.40,
         epsilon_min: float = 0.05,
         epsilon_decay: float = 0.97,
+        g_eval_interval: int = 10,
+        g_bonus_weight: float = 0.05,
     ) -> None:
         self.n_episodes = n_episodes
         self.ticks_per_episode = ticks_per_episode
+        self.g_eval_interval = g_eval_interval
+        self.g_bonus_weight = g_bonus_weight
 
         self.world = GridWorld(
             width=world_width,
@@ -170,13 +183,42 @@ class EpisodeRunner:
         self._tmp_dir = tempfile.mkdtemp(prefix="ghostmesh_episode_")
         self._mesh: GhostMesh | None = None
 
+        # G-factor evaluation state
+        self._battery_seed: int = seed if seed is not None else 0
+        self._pending_task_scores: list[list[float]] = []
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def train(self) -> TrainingStats:
-        """Run ``n_episodes`` training episodes and return aggregate stats."""
+        """Run ``n_episodes`` training episodes and return aggregate stats.
+
+        Every ``g_eval_interval`` episodes the cognitive battery is run on the
+        current greedy policy and g-factor is computed from all accumulated
+        scores.  The g-score is then used to apply a small Q-table bonus that
+        steers learning toward broadly capable behaviours.
+        """
         stats = TrainingStats()
         for ep in range(self.n_episodes):
             ep_stats = self.run_episode(max_ticks=self.ticks_per_episode)
+
+            # Run cognitive battery and accumulate task scores
+            battery = CognitiveBattery(
+                learner=self.learner,
+                seed=self._battery_seed + ep,
+            )
+            task_scores = battery.evaluate()
+            ep_stats.task_scores = task_scores
+            self._pending_task_scores.append(task_scores.as_vector())
+
+            # Compute g-factor every g_eval_interval episodes (min 3 samples)
+            if (
+                len(self._pending_task_scores) >= 3
+                and (ep + 1) % self.g_eval_interval == 0
+            ):
+                g_result = measure_g(self._pending_task_scores)
+                stats.g_history.append(g_result)
+                self._apply_g_bonus(g_result)
+
             stats.episodes.append(ep_stats)
         return stats
 
@@ -362,3 +404,70 @@ class EpisodeRunner:
 
         # Default: Q-learner ε-greedy
         return self.learner.select_action(state_key, available)
+
+    def run_battery(self, seed_offset: int = 0) -> TaskScores:
+        """Run the cognitive battery on the current policy and return scores.
+
+        This is a public convenience method for standalone battery evaluation
+        outside the main training loop.
+
+        Parameters
+        ----------
+        seed_offset:
+            Added to the base battery seed for layout variety.
+        """
+        battery = CognitiveBattery(
+            learner=self.learner,
+            seed=self._battery_seed + seed_offset,
+        )
+        return battery.evaluate()
+
+    def measure_g(self) -> GFactorResult | None:
+        """Compute g-factor from all accumulated task scores so far.
+
+        Returns None if fewer than 3 battery evaluations have been collected.
+        """
+        if len(self._pending_task_scores) < 3:
+            return None
+        return measure_g(self._pending_task_scores)
+
+    def _apply_g_bonus(self, g_result: GFactorResult) -> None:
+        """Apply a small Q-table bonus guided by the g-factor result.
+
+        The bonus rewards *breadth* of competence over narrow specialisation:
+
+        * States whose last chosen action had a high g-score projection get
+          their Q-value nudged upward by ``g_bonus_weight × g_score``.
+        * This creates a gentle thermodynamic pressure toward behaviours that
+          correlate with general performance rather than single-task tricks.
+
+        Implementation note: we boost Q-values for the top-half g-scoring
+        episodes using the *experience buffer* actions as a proxy for which
+        (state, action) pairs were characteristic of high-g behaviour.
+        """
+        if not g_result.g_scores or self.g_bonus_weight <= 0.0:
+            return
+
+        n = len(g_result.g_scores)
+        if n == 0:
+            return
+
+        # Normalise g-scores to [0, 1] for use as bonus weights
+        g_min = min(g_result.g_scores)
+        g_max = max(g_result.g_scores)
+        g_range = g_max - g_min if g_max > g_min else 1.0
+        g_normalised = [(s - g_min) / g_range for s in g_result.g_scores]
+
+        # Map each accumulated score vector to the corresponding g-bonus
+        # Use the experience buffer's recent entries as the state-action proxy
+        recent = self.experience_buffer.sample(
+            min(n, len(self.experience_buffer))
+        )
+        for idx, exp in enumerate(recent):
+            bonus_idx = min(idx, n - 1)
+            bonus = self.g_bonus_weight * g_normalised[bonus_idx]
+            if bonus > 0.0:
+                sa_key = (exp.state_key, exp.action)
+                self.learner._q[sa_key] = (
+                    self.learner._q.get(sa_key, 0.0) + bonus
+                )

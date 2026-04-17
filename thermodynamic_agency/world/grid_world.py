@@ -310,6 +310,27 @@ class GridWorld:
     def cell_at(self, pos: tuple[int, int]) -> str:
         return self._cell_at(pos)
 
+    def set_cell(self, pos: tuple[int, int], cell_type: str) -> None:
+        """Set the cell at *pos* to *cell_type*.
+
+        Only interior (non-border) positions may be modified; border cells are
+        always walls and cannot be changed.  Raises ``ValueError`` for
+        out-of-bounds positions or attempts to overwrite a border wall.
+
+        Parameters
+        ----------
+        pos:
+            ``(x, y)`` grid coordinate.
+        cell_type:
+            A :class:`CellType` value string (e.g. ``CellType.RADIATION.value``).
+        """
+        x, y = pos
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            raise ValueError(f"Position {pos} is outside the grid bounds.")
+        if x == 0 or x == self.width - 1 or y == 0 or y == self.height - 1:
+            raise ValueError(f"Position {pos} is a border wall and cannot be modified.")
+        self._grid[y][x] = cell_type
+
     def available_actions(self) -> list[WorldAction]:
         """Return valid actions from the current position."""
         actions = [WorldAction.WAIT]

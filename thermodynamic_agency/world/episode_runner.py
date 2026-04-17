@@ -436,14 +436,17 @@ class EpisodeRunner:
 
         The bonus rewards *breadth* of competence over narrow specialisation:
 
-        * States whose last chosen action had a high g-score projection get
-          their Q-value nudged upward by ``g_bonus_weight × g_score``.
+        * The most recent N experiences (one per episode in the batch) are
+          retrieved in chronological order from the experience buffer.
+        * Each experience is weighted by the normalised g-score of its
+          corresponding episode, then its Q-value is nudged upward by
+          ``g_bonus_weight × normalised_g_score``.
         * This creates a gentle thermodynamic pressure toward behaviours that
           correlate with general performance rather than single-task tricks.
 
-        Implementation note: we boost Q-values for the top-half g-scoring
-        episodes using the *experience buffer* actions as a proxy for which
-        (state, action) pairs were characteristic of high-g behaviour.
+        The chronological ordering of ``ExperienceBuffer.recent()`` ensures
+        that episode i's g-score is applied to episode i's experiences, not
+        to a random sample from across all episodes.
         """
         if not g_result.g_scores or self.g_bonus_weight <= 0.0:
             return
@@ -458,16 +461,10 @@ class EpisodeRunner:
         g_range = g_max - g_min if g_max > g_min else 1.0
         g_normalised = [(s - g_min) / g_range for s in g_result.g_scores]
 
-        # Map each accumulated score vector to the corresponding g-bonus
-        # Use the experience buffer's recent entries as the state-action proxy
-        recent = self.experience_buffer.sample(
-            min(n, len(self.experience_buffer))
-        )
+        # Use the most recent N experiences in chronological order so that
+        # experience[i] corresponds to g_scores[i] for the same episode.
+        recent = self.experience_buffer.recent(n)
         for idx, exp in enumerate(recent):
-            bonus_idx = min(idx, n - 1)
-            bonus = self.g_bonus_weight * g_normalised[bonus_idx]
+            bonus = self.g_bonus_weight * g_normalised[min(idx, n - 1)]
             if bonus > 0.0:
-                sa_key = (exp.state_key, exp.action)
-                self.learner._q[sa_key] = (
-                    self.learner._q.get(sa_key, 0.0) + bonus
-                )
+                self.learner.adjust_q_value(exp.state_key, exp.action, bonus)

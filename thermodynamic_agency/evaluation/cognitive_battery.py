@@ -37,6 +37,7 @@ Usage
 from __future__ import annotations
 
 import os
+import random as _random
 import tempfile
 from dataclasses import dataclass
 from typing import Sequence
@@ -46,11 +47,23 @@ from thermodynamic_agency.world.grid_world import (
     WorldAction,
     WorldObservation,
     CellType,
-    _GATHERABLE,  # noqa: PLC2701
 )
 from thermodynamic_agency.learning.q_learner import QLearner, encode_state
 from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.core.exceptions import GhostDeathException
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Gatherable cell types — mirrors _GATHERABLE in grid_world without importing
+# the private name.
+_GATHERABLE_CELLS: frozenset[str] = frozenset({
+    CellType.FOOD.value,
+    CellType.WATER.value,
+    CellType.MEDICINE.value,
+})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -423,11 +436,10 @@ def _inject_hazard_patch(world: GridWorld, n_cells: int = 3) -> None:
                 and world.cell_at((cx, cy)) == CellType.EMPTY.value
             ):
                 candidates.append((cx, cy))
-    import random as _random
     rng = _random.Random(world.episode)
     rng.shuffle(candidates)
-    for cx, cy in candidates[:n_cells]:
-        world._grid[cy][cx] = CellType.RADIATION.value
+    for pos in candidates[:n_cells]:
+        world.set_cell(pos, CellType.RADIATION.value)
 
 
 def _find_empty_cell(
@@ -456,7 +468,7 @@ def _opponent_observation(
             visible[(dx, dy)] = world.cell_at((x + dx, y + dy))
 
     nearby_resources = [
-        (dx, dy) for (dx, dy), c in visible.items() if c in _GATHERABLE
+        (dx, dy) for (dx, dy), c in visible.items() if c in _GATHERABLE_CELLS
     ]
     nearby_hazards = [
         (dx, dy)
@@ -514,9 +526,8 @@ def _step_opponent(
         ):
             opp_pos = candidate
     elif action_str == WorldAction.GATHER.value:
-        if world.cell_at(opp_pos) in _GATHERABLE:
-            ox, oy = opp_pos
-            world._grid[oy][ox] = CellType.EMPTY.value
+        if world.cell_at(opp_pos) in _GATHERABLE_CELLS:
+            world.set_cell(opp_pos, CellType.EMPTY.value)
             gathered = 1
 
     return opp_pos, gathered

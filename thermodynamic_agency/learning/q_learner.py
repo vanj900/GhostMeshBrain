@@ -269,6 +269,25 @@ class QLearner:
         vals = [self._q.get((state_key, a), 0.0) for a in actions]
         return sum(vals) / len(vals) if vals else 0.0
 
+    def adjust_q_value(self, state_key: tuple, action: str, delta: float) -> None:
+        """Add *delta* to the stored Q-value for *(state_key, action)*.
+
+        Public interface for external subsystems (such as the g-factor reward
+        shaper) to nudge Q-values without accessing the private ``_q`` table.
+
+        Parameters
+        ----------
+        state_key:
+            Encoded state tuple (as produced by ``encode_state()``).
+        action:
+            Action string whose Q-value should be adjusted.
+        delta:
+            Signed additive adjustment.  Positive values increase the
+            Q-value; negative values decrease it.
+        """
+        sa_key = (state_key, action)
+        self._q[sa_key] = self._q.get(sa_key, 0.0) + delta
+
     def policy_snapshot(self) -> dict[tuple, str]:
         """Return the current greedy policy as a dict of state → best_action.
 

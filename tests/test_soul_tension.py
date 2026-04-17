@@ -45,14 +45,15 @@ Test inventory
 11. ``test_war_cry_goals_inject_under_suffering``
         When tension >= WAR_CRY_TENSION_THRESHOLD and affect <=
         WAR_CRY_AFFECT_THRESHOLD, war_cry_goals() returns non-empty list
-        containing "forge_pattern".
+        containing "assert_novel_prior".
 
 12. ``test_war_cry_suppressed_when_not_suffering``
         With high tension but neutral/positive affect, war_cry_goals() is
         empty — the soul is not in the forge right now.
 
 13. ``test_war_cry_goal_in_proposal_catalogue``
-        "forge_pattern" and "crystallize_signature" are valid goal names in
+        "assert_novel_prior", "forge_governance", and
+        "challenge_precision_schedule" are valid goal names in
         GoalEngine._GOAL_PROPOSALS.
 
 14. ``test_counterfactual_depth_scales_with_tension``

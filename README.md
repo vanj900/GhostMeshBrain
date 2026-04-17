@@ -285,6 +285,9 @@ planning.  Every layer pays energy and heat to operate.
 | LanguageCognition | LLM cognitive co-processor (opt-in) | `cognition/language_cognition.py` | ✅ implemented |
 | LLMNarrator | "Professor" constraint layer with cognitive brake | `cognition/llm_narrator.py` | ✅ implemented |
 | MultiAgentRunner | Shared GridWorld competition / cooperation | `world/multi_agent_runner.py` | ✅ implemented |
+| CognitiveBattery | Six-task greedy-policy evaluation (nav/puzzle/adapt/resource/social/prediction) | `evaluation/cognitive_battery.py` | ✅ implemented |
+| G-factor (PCA) | Emergent general-intelligence score across battery runs | `evaluation/g_factor.py` | ✅ implemented |
+| RunLogger | Structured per-tick JSONL vital-sign logging | `run_logger.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -353,9 +356,13 @@ thermodynamic_agency/
 │   ├── experience_buffer.py # Fixed-capacity (s,a,r,s') replay buffer
 │   ├── world_model.py       # Tabular transition + reward model (model-based planning)
 │   └── reward.py            # Composite reward: survival + resource + hazard + internal
+├── evaluation/
+│   ├── cognitive_battery.py # Six-task evaluation battery — scores agent on [0, 1] per task
+│   └── g_factor.py          # PCA-based g-factor — measures emergent general intelligence
 ├── interface/
 │   └── hud.py               # ANSI terminal HUD renderer
-└── pulse.py                 # Main heartbeat loop (GhostMesh orchestrator)
+├── pulse.py                 # Main heartbeat loop (GhostMesh orchestrator)
+└── run_logger.py            # Structured per-tick JSONL vital-sign logging
 
 scripts/
 ├── ghostbrain.sh       # Bash pulse daemon
@@ -860,6 +867,76 @@ for i, res in enumerate(results):
 
 ---
 
+## Cognitive Evaluation (Phase 7)
+
+`evaluation/cognitive_battery.py` and `evaluation/g_factor.py` provide an
+offline benchmark for any trained GhostMesh agent.  No live organism or HUD
+is required — the battery runs short, fully deterministic GridWorld episodes
+against the agent's current greedy policy and returns normalised scores.
+
+### CognitiveBattery — six tasks
+
+Each task runs a short episode (50–60 ticks, greedy policy, no Q-table
+updates) and returns a score in **[0, 1]**:
+
+| # | Task | What is measured | Score denominator |
+|---|------|-----------------|-------------------|
+| 1 | **Navigation efficiency** | Resources gathered relative to episode length | ceiling 8 resources / 50 ticks |
+| 2 | **Puzzle solving** | FOOD → WATER repeating sequence adherence | ceiling 5 correct sequence pairs |
+| 3 | **Adaptation speed** | Hazard-avoidance rate after RADIATION cells are injected at tick 20 | fraction of post-injection moves avoiding hazard |
+| 4 | **Resource management** | Metabolic survival ticks when starting at critically low energy (E = 10) | episode length (50 ticks) |
+| 5 | **Social survival** | Resource-acquisition share against a greedy single-resource competitor | fraction of contested resources won |
+| 6 | **Counterfactual accuracy** | Hazard-adjacent moves avoided when the hazard is visible in the 5×5 window | fraction of visible-hazard moves that go away from the hazard |
+
+```python
+from thermodynamic_agency.world.episode_runner import EpisodeRunner
+from thermodynamic_agency.evaluation import CognitiveBattery
+
+# Train the agent first
+runner = EpisodeRunner(n_episodes=50, ticks_per_episode=100, seed=42)
+runner.train()
+
+# Run the battery against the trained learner
+battery = CognitiveBattery(learner=runner.learner, seed=42)
+scores = battery.evaluate()
+print(scores.as_vector())
+# → [0.87, 0.72, 0.65, 0.94, 0.58, 0.81]
+#    nav  puzzle adapt  res  social predict
+```
+
+### G-factor — measuring emergent general intelligence
+
+After evaluating the battery over **N ≥ 20** episodes, pass the resulting
+*N × 6* score matrix to `measure_g()`.  It runs a single-component PCA
+(pure standard-library, no numpy required) and returns a `GFactorResult`:
+
+| Field | Meaning |
+|-------|---------|
+| `g_scores` | First PC score per episode — higher = more broadly capable |
+| `variance_explained` | Fraction of total variance captured by the first PC; **≥ 0.35** indicates meaningful emergent *g* |
+| `loadings` | Per-task PC loadings — tasks with large positive loadings drive *g* most |
+| `task_names` | Canonical task order (`navigation`, `puzzle`, `adaptation`, `resource_mgmt`, `social`, `prediction`) |
+| `n_episodes` | Number of episodes used |
+
+```python
+from thermodynamic_agency.evaluation import measure_g
+
+# Collect score vectors from multiple battery runs / agents
+score_matrix = [battery.evaluate().as_vector() for _ in range(30)]
+
+result = measure_g(score_matrix)
+print(f"G-factor explains {result.variance_explained * 100:.1f}% of variance")
+print(f"Task loadings: {dict(zip(result.task_names, result.loadings))}")
+# → G-factor explains 41.3% of variance
+# → Task loadings: {'navigation': 0.48, 'puzzle': 0.39, ...}
+```
+
+Values of `variance_explained` above 35 % mean that a single latent factor
+(general capability) is emerging across the six tasks — analogous to the
+psychometric *g* in human cognitive testing.
+
+---
+
 ## Tests
 
 ```bash
@@ -878,7 +955,7 @@ python -m pytest tests/ -v
 - **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
 - **Phase 5 (complete):** Stochastic hostile-window environment (`cognition/environment.py`); goal engine (`cognition/goal_engine.py`); long-term episodic memory + working memory (`memory/episodic_store.py`, `memory/working_memory.py`); embodied GridWorld (`world/grid_world.py`); tabular Q-learner + world model + experience buffer (`learning/`)
 - **Phase 6 (complete):** LLMNarrator "Professor" constraint layer with cognitive brake and quadratic heat scaling (`cognition/llm_narrator.py`); LanguageCognition LLM co-processor with heuristic fallback (`cognition/language_cognition.py`); CounterfactualEngine — depth-first fear-based forward simulation (`cognition/counterfactual.py`); HomeostasisAdapter — hebbian setpoint drift with Genesis-bounded ±15 % (`cognition/homeostasis.py`); MultiAgentRunner — shared GridWorld with resource contention, broadcast costs, and cooperation bonuses (`world/multi_agent_runner.py`)
-- **Phase 7 (planned):** CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation
+- **Phase 7 (partial):** Six-task `CognitiveBattery` (`evaluation/cognitive_battery.py`) + PCA-based g-factor measurement (`evaluation/g_factor.py`); structured per-tick `RunLogger` JSONL logging (`run_logger.py`). Remaining: CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation
 
 ### Self-modification constraints (Phase 4)
 

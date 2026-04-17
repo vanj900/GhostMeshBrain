@@ -280,6 +280,11 @@ planning.  Every layer pays energy and heat to operate.
 | Working memory | Short-term recency queue | `memory/working_memory.py` | ✅ implemented |
 | GridWorld environment | Embodied navigation + resources/hazards | `world/grid_world.py` | ✅ implemented |
 | Q-learner | Tabular ε-greedy / UCB reinforcement learning | `learning/q_learner.py` | ✅ implemented |
+| CounterfactualEngine | Depth-first fear-based forward simulation | `cognition/counterfactual.py` | ✅ implemented |
+| HomeostasisAdapter | Hebbian setpoint drift (Genesis-bounded ±15 %) | `cognition/homeostasis.py` | ✅ implemented |
+| LanguageCognition | LLM cognitive co-processor (opt-in) | `cognition/language_cognition.py` | ✅ implemented |
+| LLMNarrator | "Professor" constraint layer with cognitive brake | `cognition/llm_narrator.py` | ✅ implemented |
+| MultiAgentRunner | Shared GridWorld competition / cooperation | `world/multi_agent_runner.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -330,14 +335,19 @@ thermodynamic_agency/
 │   ├── predictive_hierarchy.py  # Full hierarchical predictive coding (L0→L1→L2)
 │   ├── goal_engine.py       # Self-generated motivational goals from metabolic state
 │   ├── genesis_reader.py    # Doctrine integrity lock — 7 genesis priors at precision 5.0
-│   └── self_mod_engine.py   # Constrained self-modification with audit trail
+│   ├── self_mod_engine.py   # Constrained self-modification with audit trail
+│   ├── counterfactual.py    # CounterfactualEngine — depth-first fear-based forward simulation
+│   ├── homeostasis.py       # HomeostasisAdapter — hebbian setpoint drift (Genesis-bounded ±15 %)
+│   ├── language_cognition.py # LanguageCognition — LLM as cognitive co-processor (opt-in)
+│   └── llm_narrator.py      # LLMNarrator — "Professor" constraint layer (Phase 6)
 ├── memory/
 │   ├── diary.py             # RAM-ephemeral SQLite diary (/dev/shm)
 │   ├── episodic_store.py    # Long-term episodic memory — similarity-based recall
 │   └── working_memory.py    # Short-term recency queue for immediate decision support
 ├── world/
 │   ├── grid_world.py        # 10×10 GridWorld with resources, hazards, and partial obs.
-│   └── episode_runner.py    # Multi-episode training harness (metabolic + world loops)
+│   ├── episode_runner.py    # Multi-episode training harness (metabolic + world loops)
+│   └── multi_agent_runner.py # MultiAgentRunner — shared GridWorld with competition/cooperation
 ├── learning/
 │   ├── q_learner.py         # Tabular Q-learning with ε-greedy / UCB exploration
 │   ├── experience_buffer.py # Fixed-capacity (s,a,r,s') replay buffer
@@ -764,6 +774,92 @@ Goal sources (in priority order):
 
 ---
 
+## Phase 6 — Language, Counterfactual Reasoning & Multi-Agent World
+
+### CounterfactualEngine (`cognition/counterfactual.py`)
+
+Before the winning action is executed the `CounterfactualEngine` runs each
+candidate proposal forward in time using a lightweight depth-first simulation:
+
+1. **Depth 0** — apply the proposal's `predicted_delta` (plus energy cost) to
+   a vitals snapshot.  The real state is never mutated.
+2. **Depths 1–N** — apply one tick of passive decay per step (mirroring
+   `MetabolicState.tick()` without exception raising).
+
+Pruning rules:
+
+| Category | Condition | `terminal_risk` |
+|----------|-----------|----------------|
+| **Hard prune** (fear reflex) | Lethal at depth ≤ 2 | 1.0 |
+| **Deep lethal** | Lethal at depth > 2 | 0.50–0.90 (recency-weighted) |
+| **High-surprise survivor** | Any vital inside safety margin | 0–0.80 (coverage fraction) |
+| **Clean** | No safety-margin breaches | 0.0 |
+
+The `terminal_risk` score is added to the proposal's EFE score
+(`CF_RISK_WEIGHT = 250`) before the final action selection, making lethal
+proposals effectively unselectable.  Hard-pruned branches are metabolically
+cheap — the organism pays almost nothing to rule out immediate killers,
+mirroring the low metabolic cost of biological fear.
+
+### HomeostasisAdapter (`cognition/homeostasis.py`)
+
+Maintains an exponential moving average (EMA, α = 0.001) of observed vital
+values across thousands of ticks.  `adapted_setpoints()` returns the five
+setpoints gently shifted toward the long-run EMA, clamped within **±15 %** of
+the original compiled values — the **Genesis Doctrine bound**.
+
+This allows the organism to adapt to chronic stress (like altitude adaptation)
+without ever reaching a state where a vital collapse becomes "expected" and
+therefore un-penalised.
+
+### LanguageCognition (`cognition/language_cognition.py`)
+
+An opt-in LLM co-processor that treats language as a latent space — symbols
+compress high-dimensional metabolic state into a manipulable cognitive token.
+
+- **`compress_beliefs(state, goals)`** — converts vitals + active goals into a
+  concise symbolic sentence stored in the diary as a `thought` entry.
+- **`generate_proposals(state, goals, ethics)`** — asks the LLM (or a free
+  heuristic fallback) to recommend up to 2 archetypes from the hard-coded
+  catalogue.  Actual numeric deltas are **never** decided by the model; only
+  which archetype to recommend is influenced.
+- Every LLM call charges `0.0008 E/char + 0.0004 H/char` — long prompts are
+  genuinely expensive, incentivising concise internal language.
+
+### LLMNarrator — "Professor" constraint layer (`cognition/llm_narrator.py`)
+
+A stricter Phase 6 successor to `LanguageCognition` with three additional
+safety mechanisms:
+
+| Mechanism | Detail |
+|-----------|--------|
+| **Flat base tax** | Every call (even heuristic) costs `BASE_LLM_ENERGY_COST = 5.0 E` |
+| **Quadratic heat scaling** | LLM path: `dT = HEAT_QUAD_COEF × n_tokens²` (capped at 20.0) |
+| **Cognitive brake** | If `E < 35` or `T > 75`, returns empty proposals instantly; body survival takes priority over cognition |
+
+### Multi-Agent World (`world/multi_agent_runner.py`)
+
+`MultiAgentRunner` runs N GhostMesh agents simultaneously in a **shared**
+GridWorld.  Key dynamics:
+
+| Feature | Mechanics |
+|---------|-----------|
+| **Resource contention** | First-come-first-served; the loser receives `contested=True` and a competition penalty in their reward |
+| **Broadcast communication** | Any agent can broadcast; costs the sender `BROADCAST_ENERGY_COST + BROADCAST_HEAT_COST`; silence is free |
+| **Social stress** | Crowded 5×5 vision windows raise `social_stress` (0–1); logged as a diary stressor |
+| **Lifeboat scenario** | Pass `respawn=False` to disable resource regeneration and test which ethics profile survives exhaustion |
+
+```python
+from thermodynamic_agency.world.multi_agent_runner import MultiAgentRunner
+
+runner = MultiAgentRunner(n_agents=3, seed=42, respawn=False)
+results = runner.run(max_ticks=200)
+for i, res in enumerate(results):
+    print(f"Agent {i}: survived={res['survived']} ticks={res['ticks']}")
+```
+
+---
+
 ## Tests
 
 ```bash
@@ -781,7 +877,8 @@ python -m pytest tests/ -v
 - **Phase 3 (complete):** Full hierarchical predictive coding (`cognition/predictive_hierarchy.py`); thalamus gating (`cognition/thalamus.py`); basal ganglia habit loops (`cognition/basal_ganglia.py`)
 - **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
 - **Phase 5 (complete):** Stochastic hostile-window environment (`cognition/environment.py`); goal engine (`cognition/goal_engine.py`); long-term episodic memory + working memory (`memory/episodic_store.py`, `memory/working_memory.py`); embodied GridWorld (`world/grid_world.py`); tabular Q-learner + world model + experience buffer (`learning/`)
-- **Phase 6 (planned):** CI/CD pipeline; multi-agent interaction; persistent cross-session memory; LLM-driven goal narration
+- **Phase 6 (complete):** LLMNarrator "Professor" constraint layer with cognitive brake and quadratic heat scaling (`cognition/llm_narrator.py`); LanguageCognition LLM co-processor with heuristic fallback (`cognition/language_cognition.py`); CounterfactualEngine — depth-first fear-based forward simulation (`cognition/counterfactual.py`); HomeostasisAdapter — hebbian setpoint drift with Genesis-bounded ±15 % (`cognition/homeostasis.py`); MultiAgentRunner — shared GridWorld with resource contention, broadcast costs, and cooperation bonuses (`world/multi_agent_runner.py`)
+- **Phase 7 (planned):** CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation
 
 ### Self-modification constraints (Phase 4)
 

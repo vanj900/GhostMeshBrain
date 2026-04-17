@@ -245,6 +245,7 @@ class GoalEngine:
             for wg in war_cry:
                 if wg.name not in existing_names:
                     goals.append(wg)
+                    existing_names.add(wg.name)
 
         # ---- Filter through ethics, sort, cap -------------------------------
         valid_goals = [g for g in goals if self.ethics.is_goal_acceptable({"name": g.name})]

@@ -228,7 +228,8 @@ class Surgeon:
         if preserve_ratio > 0.0 and to_anneal:
             to_anneal.sort(key=lambda p: p.error_count, reverse=True)
             n_preserve = max(0, int(len(to_anneal) * min(1.0, preserve_ratio)))
-            to_anneal = to_anneal[n_preserve:]  # keep only the non-preserved remainder
+            # Keep only the priors not protected by soul-tension preserve
+            to_anneal = to_anneal[n_preserve:]
 
         annealed = []
         for prior in to_anneal:

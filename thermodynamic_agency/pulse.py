@@ -885,10 +885,12 @@ class GhostMesh:
             self.counterfactual_engine.hard_prune_depth = (
                 _cf_base_prune + int(_cf_params["hard_prune_depth_extra"])
             )
-            cf_traces = self.counterfactual_engine.run_batch(self.state, safe_proposals)
-            # Restore CF engine defaults immediately after use
-            self.counterfactual_engine.horizon = _cf_base_horizon
-            self.counterfactual_engine.hard_prune_depth = _cf_base_prune
+            try:
+                cf_traces = self.counterfactual_engine.run_batch(self.state, safe_proposals)
+            finally:
+                # Always restore defaults so soul tension affects only this tick
+                self.counterfactual_engine.horizon = _cf_base_horizon
+                self.counterfactual_engine.hard_prune_depth = _cf_base_prune
             cf_energy, cf_heat = self.counterfactual_engine.compute_metabolic_cost(cf_traces)
             if cf_energy > 0 or cf_heat > 0:
                 self.state.apply_action_feedback(

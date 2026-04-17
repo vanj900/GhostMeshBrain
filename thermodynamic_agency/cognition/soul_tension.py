@@ -103,6 +103,11 @@ CF_HARD_PRUNE_EXTRA_MAX: int = 2        # dare up to 2 extra steps before flinch
 # Precision amplification on Guardian vitals under descent
 GUARDIAN_AMP_MIN: float = 1.0
 GUARDIAN_AMP_MAX: float = 1.6
+# Guardian mask's native EFE precision overrides (duplicated here as constants
+# so the amplifier formula stays in sync if the Mask definitions ever change)
+_GUARDIAN_ENERGY_OVERRIDE: float = 4.0
+_GUARDIAN_HEAT_OVERRIDE: float = 3.5
+_GUARDIAN_STABILITY_OVERRIDE: float = 2.0
 
 # Surgeon preserve-ratio bounds
 SURGEON_PRESERVE_MIN: float = 0.0
@@ -269,20 +274,22 @@ class SoulTension:
         # ---- Chaos proximity: how deep into the danger band ----
         band_width = max(1.0, STRESS_UPPER - STRESS_LOWER)
         fe_pos = (fe - STRESS_LOWER) / band_width   # 0 = dormant edge, 1 = overload edge
-        chaos_proximity = max(0.0, min(1.5, fe_pos))
+        # Internal value allowed above 1.0 for the overload-decay calculation;
+        # the returned report clips it to [0, 1] for callers.
+        _chaos_raw = max(0.0, min(1.5, fe_pos))
 
         # ---- Base tension: bell-curve through sweet-spot, tail into overload ----
-        if chaos_proximity <= 0.0:
+        if _chaos_raw <= 0.0:
             base_tension = 0.0
-        elif chaos_proximity <= 1.0:
+        elif _chaos_raw <= 1.0:
             # Peaks around 0.75 of the sweet-spot band; decays toward zero at extremes.
             # This is NOT a comfortable plateau — the soul lives in the ascent.
-            base_tension = chaos_proximity * math.exp(
-                -0.5 * max(0.0, chaos_proximity - 0.75) ** 2 / 0.18
+            base_tension = _chaos_raw * math.exp(
+                -0.5 * max(0.0, _chaos_raw - 0.75) ** 2 / 0.18
             )
         else:
             # Overload: soul screams but the pattern frays as chaos wins
-            overload_excess = chaos_proximity - 1.0
+            overload_excess = _chaos_raw - 1.0
             base_tension = 0.75 * math.exp(-overload_excess * 1.5)
 
         # ---- Adaptation rate: a soul in motion has higher tension ----
@@ -306,7 +313,7 @@ class SoulTension:
 
         return SoulTensionReport(
             coherence_tension=self._coherence_tension,
-            chaos_proximity=min(1.0, chaos_proximity),
+            chaos_proximity=min(1.0, _chaos_raw),   # report clamps to [0, 1]
             adaptation_rate=adaptation_rate,
             scar_count=len(self.scars),
             signature_magnitude=sum(abs(v) for v in self.soul_signature.values()),
@@ -427,12 +434,11 @@ class SoulTension:
         if mask_name != "Guardian" or t < 0.3:
             return {}
         amplifier = GUARDIAN_AMP_MIN + (GUARDIAN_AMP_MAX - GUARDIAN_AMP_MIN) * t
-        # Guardian's native overrides: energy=4.0, heat=3.5, stability=2.0
-        # We add (amplifier - 1) * base_override as an additive boost
+        # Add (amplifier - 1) × each base override as an additive precision boost
         return {
-            "energy": (amplifier - 1.0) * 4.0,
-            "heat": (amplifier - 1.0) * 3.5,
-            "stability": (amplifier - 1.0) * 2.0,
+            "energy": (amplifier - 1.0) * _GUARDIAN_ENERGY_OVERRIDE,
+            "heat": (amplifier - 1.0) * _GUARDIAN_HEAT_OVERRIDE,
+            "stability": (amplifier - 1.0) * _GUARDIAN_STABILITY_OVERRIDE,
         }
 
     def surgeon_preserve_ratio(self) -> float:

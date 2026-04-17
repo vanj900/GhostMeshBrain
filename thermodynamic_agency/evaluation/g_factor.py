@@ -245,8 +245,10 @@ def _power_iteration(
     (eigenvector, eigenvalue):
         The normalised dominant eigenvector and its Rayleigh quotient.
     """
-    # Initialise with a uniform vector
-    b = [1.0 / math.sqrt(n)] * n
+    # Initialise with a uniform vector; normalisation in the first iteration
+    # will produce the proper unit vector, so the exact starting values do
+    # not matter as long as they are not all zero.
+    b = [1.0] * n
 
     for _ in range(max_iter):
         # Matrix–vector product: Mb

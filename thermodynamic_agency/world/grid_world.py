@@ -307,6 +307,11 @@ class GridWorld:
     def episode(self) -> int:
         return self._episode
 
+    @property
+    def vision_radius(self) -> int:
+        """Half-width of the agent's square observation window."""
+        return self._vision_radius
+
     def cell_at(self, pos: tuple[int, int]) -> str:
         return self._cell_at(pos)
 

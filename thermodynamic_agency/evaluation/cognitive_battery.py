@@ -65,6 +65,15 @@ _GATHERABLE_CELLS: frozenset[str] = frozenset({
     CellType.MEDICINE.value,
 })
 
+# Cardinal movement deltas — mirrors _MOVEMENT_DELTA in grid_world without
+# importing the private name.
+_MOVEMENT_DELTAS: dict[str, tuple[int, int]] = {
+    WorldAction.NORTH.value: (0, -1),
+    WorldAction.SOUTH.value: (0, 1),
+    WorldAction.EAST.value: (1, 0),
+    WorldAction.WEST.value: (-1, 0),
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public constants
@@ -460,7 +469,7 @@ def _opponent_observation(
     opp_pos: tuple[int, int],
 ) -> WorldObservation:
     """Return a WorldObservation centred on the opponent's position."""
-    r = world._vision_radius
+    r = world.vision_radius
     x, y = opp_pos
     visible: dict[tuple[int, int], str] = {}
     for dy in range(-r, r + 1):
@@ -512,11 +521,10 @@ def _step_opponent(
     manipulates the grid directly so that the focal agent's world state
     remains the authoritative step counter.
     """
-    from thermodynamic_agency.world.grid_world import _MOVEMENT_DELTA
     gathered = 0
 
-    if action_str in _MOVEMENT_DELTA:
-        dx, dy = _MOVEMENT_DELTA[action_str]
+    if action_str in _MOVEMENT_DELTAS:
+        dx, dy = _MOVEMENT_DELTAS[action_str]
         cx, cy = opp_pos
         candidate = (cx + dx, cy + dy)
         if (

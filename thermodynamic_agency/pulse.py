@@ -55,6 +55,7 @@ from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMem
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
 from thermodynamic_agency.interface.hud import print_hud
 from thermodynamic_agency.run_logger import RunLogger, TickRecord
+from thermodynamic_agency.cognition.soul_tension import SoulTension
 
 STATE_FILE = os.environ.get("GHOST_STATE_FILE", "/dev/shm/ghost_metabolic.json")
 DIARY_PATH = os.environ.get("GHOST_DIARY_PATH", "/dev/shm/ghost_diary.db")
@@ -106,6 +107,10 @@ class GhostMesh:
         self.state = self._load_state()
         self.diary = RamDiary(path=self._diary_path)
         self.ethics = EthicalEngine()
+        # SoulTension: patterned tension of coherence inside chaos.
+        # Forged at the intersection of death and choice.
+        # Advisor-only — never mutates state or bypasses ethics.
+        self.soul_tension = SoulTension()
         # Language Cognition: opt-in LLM co-processor (off by default).
         # Set GHOST_USE_LLM=1 to enable Ollama-backed proposal generation.
         _use_llm = os.environ.get("GHOST_USE_LLM", "0") == "1"
@@ -114,6 +119,7 @@ class GhostMesh:
             diary=self.diary,
             ethics=self.ethics,
             language_cognition=self.language_cognition,
+            soul_tension=self.soul_tension,
         )
         self.janitor = Janitor(diary=self.diary)
         self.surgeon = Surgeon(diary=self.diary)
@@ -272,6 +278,35 @@ class GhostMesh:
 
         action = self.state.tick(compute_load=self._compute_load)
         self.rotator.tick(self.state.entropy)
+
+        # Soul tension: compute the coherence_tension scalar, pay its metabolic
+        # cost, and check whether the descent has etched a new permanent scar.
+        # Must run immediately after tick() so it reads the freshest vitals.
+        _soul_report = self.soul_tension.compute(self.state)
+        self.state.apply_action_feedback(
+            delta_energy=-_soul_report.energy_cost,
+            delta_heat=_soul_report.heat_cost,
+        )
+        _scar = self.soul_tension.maybe_scar(self.state)
+        if _scar is not None:
+            self.diary.append(
+                DiaryEntry(
+                    tick=self.state.entropy,
+                    role="repair",
+                    content=(
+                        f"SOUL SCAR etched — {_scar.event_type} "
+                        f"(scars={len(self.soul_tension.scars)} "
+                        f"tension={_soul_report.coherence_tension:.3f} "
+                        f"sig_mag={_soul_report.signature_magnitude:.3f})"
+                    ),
+                    metadata={
+                        "scar_event": _scar.event_type,
+                        "scar_tick": _scar.tick,
+                        "coherence_tension": _soul_report.coherence_tension,
+                        "soul_signature": dict(self.soul_tension.soul_signature),
+                    },
+                )
+            )
 
         # Update HomeostasisAdapter with just-observed vitals.
         # This must happen immediately after tick() so the adapted setpoints
@@ -662,7 +697,10 @@ class GhostMesh:
 
     def _repair(self) -> None:
         """Run Surgeon to restore integrity and stability."""
-        report = self.surgeon.run(self.state)
+        report = self.surgeon.run(
+            self.state,
+            preserve_ratio=self.soul_tension.surgeon_preserve_ratio(),
+        )
         self.diary.append(
             DiaryEntry(
                 tick=self.state.entropy,
@@ -735,6 +773,15 @@ class GhostMesh:
                     )
             hier_efe_penalty = hierarchy_signal.hierarchical_error
 
+        # Soul tension — amplify Guardian's survival precision when in descent.
+        # The soul does not merely conserve; it asserts.  No precision value
+        # is pushed above 6.0 (the hard cap enforced everywhere).
+        for vital, boost in self.soul_tension.precision_additions(
+            self.rotator.active.name
+        ).items():
+            if vital in precision_weights:
+                precision_weights[vital] = min(6.0, precision_weights[vital] + boost)
+
         # Retrieve forward-model prediction error penalty (cerebellum layer)
         fm_penalty = self.forward_model.prediction_error_term()
 
@@ -753,6 +800,11 @@ class GhostMesh:
         # Ethics immune screening — count how many proposals are blocked
         safe_proposals = self.ethics.immune_scan(raw_proposals, self.state)
         ethics_blocks = len(raw_proposals) - len(safe_proposals)
+
+        # Soul tension — an ethics hard-block is a betrayal event.
+        # The wound is etched permanently: "you could sell out — and won't."
+        if ethics_blocks > 0:
+            self.soul_tension.maybe_scar(self.state, event_type="ethics_violation")
         if not safe_proposals:
             # All proposals were blocked — fall back to the full set rather than
             # halting entirely.  This prevents the organism from deadlocking when
@@ -819,7 +871,24 @@ class GhostMesh:
             # terminal risk penalties can influence selection.  Hard-pruned
             # branches (lethal within 2 ticks) cost almost nothing; the full
             # 10-step cost is only paid for surviving trajectories.
+            #
+            # Soul tension adjusts the CF engine's look-ahead depth.
+            # High tension → deeper horizon + later hard prune (dare the dark).
+            # Params are restored after the run so the engine defaults are
+            # not permanently altered by a single tick's tension level.
+            _cf_params = self.soul_tension.counterfactual_params()
+            _cf_base_horizon = self.counterfactual_engine.horizon
+            _cf_base_prune = self.counterfactual_engine.hard_prune_depth
+            self.counterfactual_engine.horizon = int(
+                _cf_base_horizon * _cf_params["horizon_scale"]
+            )
+            self.counterfactual_engine.hard_prune_depth = (
+                _cf_base_prune + int(_cf_params["hard_prune_depth_extra"])
+            )
             cf_traces = self.counterfactual_engine.run_batch(self.state, safe_proposals)
+            # Restore CF engine defaults immediately after use
+            self.counterfactual_engine.horizon = _cf_base_horizon
+            self.counterfactual_engine.hard_prune_depth = _cf_base_prune
             cf_energy, cf_heat = self.counterfactual_engine.compute_metabolic_cost(cf_traces)
             if cf_energy > 0 or cf_heat > 0:
                 self.state.apply_action_feedback(

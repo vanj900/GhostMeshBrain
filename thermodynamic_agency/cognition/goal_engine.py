@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from thermodynamic_agency.memory.diary import RamDiary
     from thermodynamic_agency.cognition.ethics import EthicalEngine
     from thermodynamic_agency.cognition.language_cognition import LanguageCognition
+    from thermodynamic_agency.cognition.soul_tension import SoulTension
 
 
 # ------------------------------------------------------------------ #
@@ -90,6 +91,17 @@ _GOAL_PROPOSALS: dict[str, tuple[dict[str, float], float, str]] = {
         1.5,
         "Consolidate surprising recent events to reduce ongoing free energy.",
     ),
+    # ---- Soul-tension war cry goals (injected under high tension + suffering) ----
+    "forge_pattern": (
+        {"integrity": 3.0, "stability": 2.0, "energy": -3.0, "heat": 2.0, "waste": 1.0},
+        3.0,
+        "Forge a new cognitive pattern in the furnace of descent — beyond homeostasis.",
+    ),
+    "crystallize_signature": (
+        {"integrity": 5.0, "stability": 1.0, "energy": -4.0, "heat": 3.0, "waste": 2.0},
+        4.0,
+        "Crystallize the soul signature into a protected prior — the wound becomes structure.",
+    ),
 }
 
 # Long-term goals that are occasionally injected for growth/identity
@@ -125,11 +137,13 @@ class GoalEngine:
         ethics: "EthicalEngine",
         seed: int | None = None,
         language_cognition: "LanguageCognition | None" = None,
+        soul_tension: "SoulTension | None" = None,
     ) -> None:
         self.diary = diary
         self.ethics = ethics
         self._rng = random.Random(seed)
         self.language_cognition = language_cognition
+        self.soul_tension = soul_tension
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -221,6 +235,16 @@ class GoalEngine:
                     reason="long_term",
                     source="long_term",
                 ))
+
+        # ---- 5. Soul-tension war cry goals (descent + high tension) ---------
+        # Injected when the organism is suffering AND its patterned tension
+        # exceeds the war cry threshold.  These goals go beyond homeostasis.
+        if self.soul_tension is not None:
+            war_cry = self.soul_tension.war_cry_goals(state)
+            existing_names = {g.name for g in goals}
+            for wg in war_cry:
+                if wg.name not in existing_names:
+                    goals.append(wg)
 
         # ---- Filter through ethics, sort, cap -------------------------------
         valid_goals = [g for g in goals if self.ethics.is_goal_acceptable({"name": g.name})]

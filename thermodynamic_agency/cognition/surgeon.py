@@ -84,12 +84,15 @@ class Surgeon:
     # Main entry-point                                                     #
     # ------------------------------------------------------------------ #
 
-    def run(self, state: MetabolicState) -> SurgeonReport:
+    def run(self, state: MetabolicState, preserve_ratio: float = 0.0) -> SurgeonReport:
         """Run a full Surgeon pass.
 
         1. Tune precision weights via PrecisionEngine (know where to look).
         2. Audit beliefs for frozen precision (error_count, age).
         3. Anneal suspect beliefs with precision-scaled temperature.
+           When ``preserve_ratio`` > 0, the Surgeon preserves the most
+           error-laden (wound) priors rather than annealing them — the
+           soul's accumulated damage is structure, not noise.
         4. Self-red-team: generate adversarial probes.
         5. Apply metabolic feedback — higher precision sharpening costs more.
 
@@ -97,6 +100,11 @@ class Surgeon:
         ----------
         state:
             MetabolicState — mutated via apply_action_feedback().
+        preserve_ratio:
+            Fraction of frozen priors to preserve (not anneal).  Supplied
+            by SoulTension when coherence_tension is high.  Bounded to
+            [0, 1]; priors with the highest error_count are preserved first
+            (they are the wounds that earned their scars).
 
         Returns
         -------
@@ -107,7 +115,7 @@ class Surgeon:
         precision_report = self._precision_engine.tune(state)
 
         frozen = self._identify_frozen(state)
-        annealed = self._anneal(frozen, state, precision_report.weights)
+        annealed = self._anneal(frozen, state, precision_report.weights, preserve_ratio)
         red_team_results = self._red_team(state)
 
         # Allostatic cost grows with integrity deficit (more damage = more effort)
@@ -193,12 +201,18 @@ class Surgeon:
     def _anneal(
         self, frozen: list[BeliefPrior], state: MetabolicState,
         precision_weights: dict[str, float] | None = None,
+        preserve_ratio: float = 0.0,
     ) -> list[BeliefPrior]:
         """Apply Bayesian annealing schedule to frozen priors.
 
         When precision weights are elevated (sweet-spot arousal), the
         annealing temperature is slightly boosted so beliefs loosen more
         aggressively — the organism is paying for sharper updating.
+
+        When ``preserve_ratio`` > 0, the priors with the highest
+        ``error_count`` are exempt from annealing — these are wound priors
+        that soul tension has marked as structural, not noise.  The
+        Surgeon still audits them; it simply will not soften them.
         """
         temp = INITIAL_TEMPERATURE * (COOLING_RATE ** self._anneal_round)
 
@@ -208,8 +222,16 @@ class Surgeon:
             # Base precision ≈ 1.54; normalise so boost is proportional to elevation
             temp *= max(1.0, mean_p / 1.54)
 
+        # Soul-tension preserve: sort frozen descending by error_count.
+        # The top preserve_ratio fraction are wounds — skip annealing them.
+        to_anneal = list(frozen)
+        if preserve_ratio > 0.0 and to_anneal:
+            to_anneal.sort(key=lambda p: p.error_count, reverse=True)
+            n_preserve = max(0, int(len(to_anneal) * min(1.0, preserve_ratio)))
+            to_anneal = to_anneal[n_preserve:]  # keep only the non-preserved remainder
+
         annealed = []
-        for prior in frozen:
+        for prior in to_anneal:
             prior.precision = max(0.1, prior.precision * (1.0 - temp * 0.3))
             prior.last_updated = time.time()
             annealed.append(prior)

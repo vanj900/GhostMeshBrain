@@ -114,7 +114,7 @@ class GhostMesh:
         self._purity_mode: bool = _purity_mode
         self._purity_bypass_attempted: bool = _purity_mode and _use_llm_requested
         if _purity_mode:
-            self.language_cognition: "LanguageCognition | None" = None
+            self.language_cognition: LanguageCognition | None = None
         else:
             self.language_cognition = LanguageCognition(
                 diary=self.diary, use_llm=_use_llm_requested
@@ -1088,7 +1088,7 @@ class GhostMesh:
             },
         ))
 
-    def _load_state(self) -> "tuple[MetabolicState, bool]":
+    def _load_state(self) -> tuple[MetabolicState, bool]:
         """Load MetabolicState from disk, or create a fresh one.
 
         Returns

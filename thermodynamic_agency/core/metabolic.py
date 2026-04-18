@@ -158,7 +158,12 @@ class MetabolicState:
 
         # Passive decay — all non-linear to create emergent dynamics
         self.energy -= compute_load * 0.12
-        self.heat += compute_load * 0.1 * (1.0 + self.waste / 50.0)
+        # Non-linear waste → heat cascade: high waste amplifies heat exponentially
+        # (biological analogy: inflammation runaway above critical toxin threshold).
+        _waste_heat_factor = 1.0 + self.waste / 50.0
+        if self.waste > 60.0:
+            _waste_heat_factor += ((self.waste - 60.0) / 40.0) ** 2
+        self.heat += compute_load * 0.1 * _waste_heat_factor
         self.integrity *= 1.0 - (self.heat / 120.0) * compute_load * 0.01
         self.stability -= compute_load * 0.05
         self.waste += 0.018 * compute_load
@@ -349,7 +354,10 @@ class MetabolicState:
 
         for _ in range(horizon):
             w = w + 0.018 + 0.02 * al_ratio
-            h = h + 0.1 * (1.0 + w / 50.0) + 0.08 * al_ratio
+            _wf = 1.0 + w / 50.0
+            if w > 60.0:
+                _wf += ((w - 60.0) / 40.0) ** 2
+            h = h + 0.1 * _wf + 0.08 * al_ratio
             m = m * (1.0 - (h / 120.0) * 0.01)
             s = s - 0.05
             e = e - 0.12

@@ -50,6 +50,7 @@ from thermodynamic_agency.cognition.genesis_reader import GenesisReader
 from thermodynamic_agency.cognition.counterfactual import CounterfactualEngine, CF_RISK_WEIGHT
 from thermodynamic_agency.cognition.language_cognition import LanguageCognition
 from thermodynamic_agency.cognition.homeostasis import HomeostasisAdapter
+from thermodynamic_agency.cognition.meta_cognitive_self_model import MetaCognitiveSelfModel
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
@@ -202,6 +203,10 @@ class GhostMesh:
         # Optional per-tick run logger (writes JSONL to GHOST_LOG_FILE if set)
         _log_file = os.environ.get("GHOST_LOG_FILE", "")
         self.run_logger = RunLogger(path=_log_file if _log_file else None)
+
+        # Meta-cognitive self-model: higher-order layer for recursive
+        # self-modeling and epistemic continuity tracking.
+        self.meta_self = MetaCognitiveSelfModel(core_self_model=self.state)
 
         # Tracks precision regime set during the last DECIDE step for logging
         self._last_precision_regime: str = "dormant"
@@ -815,6 +820,18 @@ class GhostMesh:
         # EFE discount from nucleus accumbens (positive affect reward signal)
         reward_discount = limbic_signal.efe_discount if limbic_signal else 0.0
 
+        # Meta-cognitive layer: compute higher-order free-energy contribution
+        # and add it to EFE scores before policy selection.
+        _diary_entries = self.diary.recent(1)
+        _diary_snapshot = _diary_entries[-1].content if _diary_entries else ""
+        _llm_cf = self.llm_narrator if hasattr(self, "llm_narrator") else None
+        meta_cost = self.meta_self.update(
+            current_vitals=self.state,
+            base_affect=self.state.affect,
+            diary_snapshot=_diary_snapshot,
+            llm_counterfactual=_llm_cf,
+        )
+
         # If ethics blocked the habit-candidate proposal, fall back to full planning.
         if use_habit and (first_proposal is None or first_proposal not in safe_proposals):
             use_habit = False
@@ -829,6 +846,9 @@ class GhostMesh:
             selected = first_proposal  # type: ignore[assignment]  # guarded by use_habit check above
             efe_scores = {p.name: bg_signal.estimated_efe for p in safe_proposals}
             efe_scores[selected.name] = bg_signal.estimated_efe
+            # Augment EFE scores with meta-cognitive precision cost
+            for k in efe_scores:
+                efe_scores[k] += meta_cost
             habit_note = f" [habit: {bg_signal.reason}]"
             cost_str = (
                 f"habit_cost=[E={bg_signal.energy_cost:.3f} "
@@ -935,6 +955,9 @@ class GhostMesh:
             if hier_efe_penalty > 0:
                 for k in result.efe_scores:
                     result.efe_scores[k] += hier_efe_penalty
+            # Augment EFE scores with meta-cognitive precision cost
+            for k in result.efe_scores:
+                result.efe_scores[k] += meta_cost
             efe_scores = result.efe_scores
 
             cost = result.inference_cost
@@ -1087,6 +1110,10 @@ class GhostMesh:
                 "stability_penalty": stability_penalty,
             },
         ))
+
+        # Notify meta-cognitive layer of the continuity break so it can
+        # register the epistemic discontinuity and adjust its priors.
+        self.meta_self.handle_restart(previous_continuity_anchor=None)
 
     def _load_state(self) -> tuple[MetabolicState, bool]:
         """Load MetabolicState from disk, or create a fresh one.

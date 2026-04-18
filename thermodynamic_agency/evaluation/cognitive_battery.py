@@ -36,6 +36,7 @@ Usage
 
 from __future__ import annotations
 
+import math as _math
 import os
 import random as _random
 import tempfile
@@ -152,11 +153,15 @@ class CognitiveBattery:
     def __init__(self, learner: QLearner, seed: int = 0) -> None:
         self.learner = learner
         self.seed = seed
+        self._eval_rng: _random.Random = _random.Random(seed)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def evaluate(self) -> TaskScores:
         """Run all six tasks and return a :class:`TaskScores` result."""
+        # Reset eval RNG so repeated calls to evaluate() on the same battery
+        # instance are fully reproducible for a given seed.
+        self._eval_rng.seed(self.seed)
         return TaskScores(
             navigation=self._nav_efficiency(),
             puzzle=self._puzzle_solving(),
@@ -409,10 +414,40 @@ class CognitiveBattery:
         obs: WorldObservation,
         available: list[WorldAction],
     ) -> str:
-        """Select the greedy (no-exploration) action from the Q-table."""
+        """Select the greedy (no-exploration) action from the Q-table.
+
+        Mirrors the UCB-augmented logic of
+        :meth:`~thermodynamic_agency.learning.q_learner.QLearner.best_action`
+        but breaks ties among equally-ranked actions using the battery's own
+        seeded RNG.  This propagates ``self.seed`` into evaluation trajectories
+        so that different battery seeds can produce different task scores even
+        when the majority of encountered states are unseen (Q=0 for all
+        actions).
+        """
         available_str = [a.value if isinstance(a, WorldAction) else a for a in available]
         state_key = encode_state(state.to_dict(), obs)
-        return self.learner.best_action(state_key, available_str)
+
+        # Replicate learner's UCB bonus so evaluation honours optimism in the
+        # same way as training (untried actions stay attractive).
+        ucb_w = self.learner.ucb_weight
+        vc = self.learner._visit_counts
+        total = sum(vc.get((state_key, a), 0) for a in available_str)
+        log_total = _math.log(total + 1)
+
+        q_ucb: dict[str, float] = {}
+        for a in available_str:
+            q = self.learner.q_value(state_key, a)
+            if ucb_w > 0:
+                n = vc.get((state_key, a), 0)
+                q += ucb_w * _math.sqrt(2.0 * log_total / (n + 1))
+            q_ucb[a] = q
+
+        best_q = max(q_ucb.values())
+        best_actions = [a for a, q in q_ucb.items() if q == best_q]
+        # Break ties (including the common case of all-zero Q for unseen states)
+        # using the battery-seeded RNG so that different seeds yield different
+        # evaluation trajectories.
+        return self._eval_rng.choice(best_actions)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

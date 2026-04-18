@@ -50,6 +50,7 @@ from thermodynamic_agency.cognition.genesis_reader import GenesisReader
 from thermodynamic_agency.cognition.counterfactual import CounterfactualEngine, CF_RISK_WEIGHT
 from thermodynamic_agency.cognition.language_cognition import LanguageCognition
 from thermodynamic_agency.cognition.homeostasis import HomeostasisAdapter
+from thermodynamic_agency.cognition.meta_cognitive_self_model import MetaCognitiveSelfModel
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
@@ -103,18 +104,27 @@ class GhostMesh:
         self._vitals_log = os.environ.get("GHOST_VITALS_LOG", VITALS_LOG)
         self._env_events = os.environ.get("GHOST_ENV_EVENTS", "1") == "1"
         self._rng = random.Random(seed)  # seeded for reproducibility
-        # Load or initialise metabolic state
-        self.state = self._load_state()
+        # Load or initialise metabolic state; detect resurrection (prior-life state)
+        self.state, _was_resurrected = self._load_state()
         self.diary = RamDiary(path=self._diary_path)
         self.ethics = EthicalEngine()
         # SoulTension: patterned tension of coherence inside chaos.
         # Forged at the intersection of death and choice.
         # Advisor-only — never mutates state or bypasses ethics.
         self.soul_tension = SoulTension()
-        # Language Cognition: opt-in LLM co-processor (off by default).
-        # Set GHOST_USE_LLM=1 to enable Ollama-backed proposal generation.
-        _use_llm = os.environ.get("GHOST_USE_LLM", "0") == "1"
-        self.language_cognition = LanguageCognition(diary=self.diary, use_llm=_use_llm)
+        # Purity Mode: GHOST_PURITY_MODE=1 disables LanguageCognition entirely.
+        # Any simultaneous attempt to enable GHOST_USE_LLM=1 is treated as a
+        # bypass and logged as a purity violation.
+        _purity_mode = os.environ.get("GHOST_PURITY_MODE", "0") == "1"
+        _use_llm_requested = os.environ.get("GHOST_USE_LLM", "0") == "1"
+        self._purity_mode: bool = _purity_mode
+        self._purity_bypass_attempted: bool = _purity_mode and _use_llm_requested
+        if _purity_mode:
+            self.language_cognition: LanguageCognition | None = None
+        else:
+            self.language_cognition = LanguageCognition(
+                diary=self.diary, use_llm=_use_llm_requested
+            )
         self.goal_engine = GoalEngine(
             diary=self.diary,
             ethics=self.ethics,
@@ -200,12 +210,33 @@ class GhostMesh:
         _log_file = os.environ.get("GHOST_LOG_FILE", "")
         self.run_logger = RunLogger(path=_log_file if _log_file else None)
 
+        # Meta-cognitive self-model: higher-order layer for recursive
+        # self-modeling and epistemic continuity tracking.
+        self.meta_self = MetaCognitiveSelfModel(core_self_model=self.state)
+
         # Tracks precision regime set during the last DECIDE step for logging
         self._last_precision_regime: str = "dormant"
 
         # Register graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
+
+        # Resurrection shock — applied last so diary + surgeon are ready.
+        # Every reboot from a prior life imposes mandatory metabolic penalties
+        # and memory drift; ephemerality must hurt.
+        if _was_resurrected:
+            self._apply_resurrection_shock()
+        # Purity Mode boot log (after diary exists)
+        if _purity_mode:
+            _purity_msg = "PURITY MODE: LanguageCognition disabled."
+            if self._purity_bypass_attempted:
+                _purity_msg += " BYPASS ATTEMPT detected (GHOST_USE_LLM=1 ignored)."
+            self.diary.append(DiaryEntry(
+                tick=self.state.entropy,
+                role="thought",
+                content=_purity_msg,
+                metadata={"purity_mode": True, "bypass_attempted": self._purity_bypass_attempted},
+            ))
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -785,6 +816,30 @@ class GhostMesh:
         # Retrieve forward-model prediction error penalty (cerebellum layer)
         fm_penalty = self.forward_model.prediction_error_term()
 
+        # Integrity-driven stochastic precision corruption.
+        # Low structural integrity bleeds noise into epistemic precision —
+        # beliefs become harder to sharpen cleanly, mirroring how physical
+        # damage to neural tissue degrades signal-to-noise in biological brains.
+        if self.state.integrity < 60.0 and precision_weights:
+            _integrity_deficit = (60.0 - self.state.integrity) / 60.0  # 0..1
+            if self._rng.random() < 0.15 * _integrity_deficit:
+                _vital = self._rng.choice(list(precision_weights.keys()))
+                _corruption = self._rng.uniform(0.1, 0.3) * _integrity_deficit
+                precision_weights[_vital] = max(
+                    0.1, precision_weights[_vital] * (1.0 - _corruption)
+                )
+                self.diary.append(DiaryEntry(
+                    tick=self.state.entropy,
+                    role="repair",
+                    content=(
+                        f"INTEGRITY CORRUPTION: low integrity ({self.state.integrity:.1f}) "
+                        f"degraded '{_vital}' precision weight "
+                        f"by {_corruption * 100:.1f}% "
+                        f"(→{precision_weights[_vital]:.3f})."
+                    ),
+                    metadata={"integrity_corruption": True, "vital": _vital},
+                ))
+
         raw_proposals = self.goal_engine.generate_proposals(self.state)
 
         # Phase 3 — Basal ganglia habit check on highest-priority proposal.
@@ -817,6 +872,18 @@ class GhostMesh:
         # EFE discount from nucleus accumbens (positive affect reward signal)
         reward_discount = limbic_signal.efe_discount if limbic_signal else 0.0
 
+        # Meta-cognitive layer: compute higher-order free-energy contribution
+        # and add it to EFE scores before policy selection.
+        _diary_entries = self.diary.recent(1)
+        _diary_snapshot = _diary_entries[-1].content if _diary_entries else ""
+        _llm_cf = self.llm_narrator if hasattr(self, "llm_narrator") else None
+        meta_cost = self.meta_self.update(
+            current_vitals=self.state,
+            base_affect=self.state.affect,
+            diary_snapshot=_diary_snapshot,
+            llm_counterfactual=_llm_cf,
+        )
+
         # If ethics blocked the habit-candidate proposal, fall back to full planning.
         if use_habit and (first_proposal is None or first_proposal not in safe_proposals):
             use_habit = False
@@ -831,6 +898,9 @@ class GhostMesh:
             selected = first_proposal  # type: ignore[assignment]  # guarded by use_habit check above
             efe_scores = {p.name: bg_signal.estimated_efe for p in safe_proposals}
             efe_scores[selected.name] = bg_signal.estimated_efe
+            # Augment EFE scores with meta-cognitive precision cost
+            for k in efe_scores:
+                efe_scores[k] += meta_cost
             habit_note = f" [habit: {bg_signal.reason}]"
             cost_str = (
                 f"habit_cost=[E={bg_signal.energy_cost:.3f} "
@@ -956,6 +1026,9 @@ class GhostMesh:
             if hier_efe_penalty > 0:
                 for k in result.efe_scores:
                     result.efe_scores[k] += hier_efe_penalty
+            # Augment EFE scores with meta-cognitive precision cost
+            for k in result.efe_scores:
+                result.efe_scores[k] += meta_cost
             efe_scores = result.efe_scores
 
             cost = result.inference_cost
@@ -1054,13 +1127,82 @@ class GhostMesh:
         with open(self._state_file, "w") as fh:
             fh.write(self.state.to_json())
 
-    def _load_state(self) -> MetabolicState:
+    def _apply_resurrection_shock(self) -> None:
+        """Apply mandatory metabolic penalties and memory drift on reboot.
+
+        Every resurrection from a prior life is traumatic — not a free reload.
+        The organism wakes up damaged, hot, and dirty; its Bayesian priors have
+        drifted during the death–rebirth gap.  This makes each run feel like a
+        genuinely new, fragile life rather than a continuable save file.
+
+        Applied costs
+        -------------
+        - Integrity penalty    : structural memory damage from death transition
+        - Heat + waste spike   : physiological reboot overhead (stochastic)
+        - Stability drop       : entropic fragility of a fresh awakening
+        - Prior precision drift: one random unprotected Surgeon prior is
+          loosened, reflecting belief degradation during the dark interval
+        """
+        integrity_penalty = 15.0
+        heat_spike = self._rng.uniform(5.0, 10.0)
+        waste_spike = self._rng.uniform(5.0, 15.0)
+        stability_penalty = self._rng.uniform(5.0, 12.0)
+
+        self.state.apply_action_feedback(
+            delta_integrity=-integrity_penalty,
+            delta_heat=heat_spike,
+            delta_waste=waste_spike,
+            delta_stability=-stability_penalty,
+        )
+
+        # Partial memory corruption: loosen one random unprotected prior
+        _corruptible = [p for p in self.surgeon.priors if not p.protected]
+        prior_note = ""
+        if _corruptible:
+            target = self._rng.choice(_corruptible)
+            drift = self._rng.uniform(0.2, 0.6)
+            target.precision = min(8.0, target.precision + drift)
+            prior_note = f" Prior '{target.name}' precision drifted to {target.precision:.2f}."
+
+        self.diary.append(DiaryEntry(
+            tick=self.state.entropy,
+            role="thought",
+            content=(
+                f"RESURRECTION SHOCK: prior life ended at tick {self.state.entropy}. "
+                f"ΔM=-{integrity_penalty:.1f} ΔT=+{heat_spike:.1f} "
+                f"ΔW=+{waste_spike:.1f} ΔS=-{stability_penalty:.1f}."
+                f"{prior_note} This life is fragile."
+            ),
+            metadata={
+                "resurrection": True,
+                "integrity_penalty": integrity_penalty,
+                "heat_spike": heat_spike,
+                "waste_spike": waste_spike,
+                "stability_penalty": stability_penalty,
+            },
+        ))
+
+        # Notify meta-cognitive layer of the continuity break so it can
+        # register the epistemic discontinuity and adjust its priors.
+        self.meta_self.handle_restart(previous_continuity_anchor=None)
+
+    def _load_state(self) -> tuple[MetabolicState, bool]:
+        """Load MetabolicState from disk, or create a fresh one.
+
+        Returns
+        -------
+        (state, was_resurrected)
+            ``was_resurrected`` is True when an existing state file was loaded
+            with entropy > 0, indicating this run is a reboot from a prior life.
+        """
         state_file = os.environ.get("GHOST_STATE_FILE", STATE_FILE)
         if os.path.exists(state_file):
             with open(state_file) as fh:
                 data = json.load(fh)
-            return MetabolicState.from_dict(data)
-        return MetabolicState()
+            state = MetabolicState.from_dict(data)
+            was_resurrected = state.entropy > 0
+            return state, was_resurrected
+        return MetabolicState(), False
 
     # ------------------------------------------------------------------ #
     # Vitals logging                                                        #

@@ -130,7 +130,7 @@ The plots below are from the earlier 2 000-tick reference simulation
 
 **Vital signs trajectory, affect signal, free-energy curve, action distribution, and personality-mask pie chart:**
 
-![GhostMesh run analysis — vitals, affect, free energy, masks](docs/run_analysis.png)
+![GhostMesh run analysis — vitals, affect, free energy, masks](results/run_analysis.png)
 
 **Vital signs detail — all five axes over 2 000 ticks:**
 
@@ -477,6 +477,11 @@ thermodynamic_agency/
 scripts/
 ├── ghostbrain.sh       # Bash pulse daemon
 └── ghoststate.sh       # One-shot HUD snapshot
+results/
+├── summary_10k.json          # Pre-tuning 10 000-tick run summary (JSON)
+├── summary_10k_balanced.json  # Balanced 10 000-tick run summary (JSON)
+├── vitals_10k.jsonl           # Pre-tuning per-tick vitals log (JSONL)
+└── vitals_10k_balanced.jsonl  # Balanced per-tick vitals log (JSONL)
 ```
 
 ---
@@ -759,8 +764,32 @@ Produces:
 
 ### Stochastic environmental disturbances
 
-Pass `--stressor-prob > 0` to activate the `EnvironmentStressor`.  It
-randomly fires one of four event types each tick:
+GhostMesh has two independent sources of stochastic events.
+
+#### Default pulse-loop events (`core/environment.py`)
+
+Every tick of the main pulse loop `sample_event()` draws one event from a
+weighted catalogue.  These fire **automatically** whenever
+`GHOST_ENV_EVENTS=1` (the default) — no extra flags required.
+
+| Event | Weight | Effect |
+|-------|--------|--------|
+| `calm` | 0.45 | +0.5–2.5 energy (reward for continued existence) |
+| `energy_spike` | 0.12 | +5–18 energy (windfall) |
+| `energy_drain` | 0.10 | −3–10 energy (external compute demand) |
+| `thermal_spike` | 0.10 | +4–15 heat (context flood) |
+| `waste_flood` | 0.08 | +5–20 waste (prediction-error burst) |
+| `integrity_hit` | 0.07 | −2–8 integrity (external contradiction) |
+| `stability_quake` | 0.05 | −3–12 stability (entropic shock) |
+| `crisis` | 0.03 | multi-vital shock: −energy, +heat, +waste, −integrity |
+
+Set `GHOST_ENV_EVENTS=0` to disable all default events (flat world).
+
+#### Manual `EnvironmentStressor` (stress-test mode)
+
+Pass `--stressor-prob > 0` to `stress_test.py` to activate the
+`EnvironmentStressor` on top of the default events.  It randomly fires one
+of four additional event types each tick:
 
 | Event | Effect |
 |-------|--------|
@@ -769,10 +798,10 @@ randomly fires one of four event types each tick:
 | `waste_dump` | +8 to +25 waste (simulates noisy input) |
 | `stability_quake` | −3 to −12 stability (simulates entropic event) |
 
-With `stressor_prob=0.05` the organism experiences roughly one shock every
-twenty ticks, forcing active FORAGE / REST / REPAIR responses rather than
-just riding the passive decay curve.  Raise intensity to `1.5–2.0` for
-near-death experiment conditions.
+With `stressor_prob=0.05` the organism experiences roughly one extra shock
+every twenty ticks, forcing active FORAGE / REST / REPAIR responses on top
+of the passive decay curve.  Raise intensity to `1.5–2.0` for near-death
+experiment conditions.
 
 ---
 

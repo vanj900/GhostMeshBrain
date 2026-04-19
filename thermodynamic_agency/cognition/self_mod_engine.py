@@ -58,7 +58,7 @@ from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 # ------------------------------------------------------------------ #
 
 # Stage gate
-PHASE4_MIN_TICKS: int = 2000
+PHASE4_MIN_TICKS: int = 10000
 PHASE4_MIN_HEALTH: float = 60.0
 
 # ── Metabolic pain for self-modification (every attempt, even successful) ──
@@ -277,7 +277,7 @@ class SelfModEngine:
         SelfModResult or None
             None if the stage gate or chill period suppresses the cycle.
         """
-        # Stage gate: only unlocked at "evolved" (entropy ≥ 2000, health ≥ 60%)
+        # Stage gate: only unlocked at "evolved" (entropy ≥ 10000, health ≥ 60%)
         if not self._stage_gate(state):
             return None
 
@@ -426,7 +426,7 @@ class SelfModEngine:
 
     @staticmethod
     def _stage_gate(state: MetabolicState) -> bool:
-        """True only at evolved stage (entropy ≥ 2000 + health ≥ 60%)."""
+        """True only at evolved stage (entropy ≥ 10000 + health ≥ 60%)."""
         return state.stage == "evolved"
 
     # ------------------------------------------------------------------ #

@@ -70,6 +70,19 @@ class InferenceCost:
 
 
 @dataclass
+class EFEComponents:
+    """Breakdown of the multi-step EFE for the selected action.
+
+    Captured after active_inference_step() for phase-transition analysis.
+    """
+
+    accuracy: float = 0.0     # precision-weighted prediction-error term
+    complexity: float = 0.0   # prior-shift (KL) complexity term
+    risk: float = 0.0         # death-proximity risk penalty
+    wear: float = 0.0         # allostatic-load wear penalty
+
+
+@dataclass
 class InferenceResult:
     """Output of active_inference_step."""
 
@@ -77,6 +90,7 @@ class InferenceResult:
     efe_scores: dict[str, float]        # name → EFE value (lower = better)
     reasoning: str = ""
     inference_cost: InferenceCost | None = None   # metabolic cost of this inference pass
+    efe_components: EFEComponents | None = None   # breakdown of best-action EFE
 
 
 # ---------------------------------------------------------------------- #
@@ -303,7 +317,8 @@ def compute_multistep_efe(
     horizon: int = _HORIZON,
     gamma: float = _GAMMA,
     setpoints: dict[str, float] | None = None,
-) -> float:
+    return_components: bool = False,
+) -> "float | tuple[float, EFEComponents]":
     """Compute multi-step Expected Free Energy via a short forward rollout.
 
     Instead of scoring only the immediate post-action state, this rolls
@@ -329,11 +344,17 @@ def compute_multistep_efe(
         provided, the organism's long-run vital expectations are used in the
         accuracy term instead of the compile-time ``_SETPOINT`` constants.
         Defaults to ``_SETPOINT`` when ``None``.
+    return_components:
+        When ``True``, return ``(total_efe, EFEComponents)`` instead of just
+        the scalar total.  Used by the CollapseProbe for phase-transition
+        analysis.
 
     Returns
     -------
-    float
+    float or tuple[float, EFEComponents]
         Multi-step EFE score (non-negative; lower is better).
+        When *return_components* is ``True``, also returns a breakdown of
+        the accumulated accuracy, complexity, risk, and wear terms.
     """
     precision = precision_weights if precision_weights is not None else _PRECISION
     allostatic_load = getattr(state, "allostatic_load", 0.0)
@@ -354,6 +375,10 @@ def compute_multistep_efe(
     complexity_per_tick = sum(abs(v) for v in predicted_delta.values()) * 0.05 / max(1, horizon)
 
     total = 0.0
+    total_accuracy = 0.0
+    total_complexity = 0.0
+    total_risk = 0.0
+    total_wear = 0.0
     discount = 1.0
     for _ in range(1, horizon + 1):
         vitals = _decay_vitals_one_step(vitals, allostatic_load=allostatic_load)
@@ -361,8 +386,19 @@ def compute_multistep_efe(
         risk = _risk_term(vitals)
         wear = _wear_term(allostatic_load)
         total += discount * (accuracy + complexity_per_tick + risk + wear)
+        total_accuracy += discount * accuracy
+        total_complexity += discount * complexity_per_tick
+        total_risk += discount * risk
+        total_wear += discount * wear
         discount *= gamma
 
+    if return_components:
+        return total, EFEComponents(
+            accuracy=total_accuracy,
+            complexity=total_complexity,
+            risk=total_risk,
+            wear=total_wear,
+        )
     return total
 
 # GHOST_COMPUTE_LOAD default — overridden by env var in pulse.py
@@ -494,6 +530,7 @@ def active_inference_step(
     )
 
     scores: dict[str, float] = {}
+    best_delta: dict[str, float] = {}
     for p in proposals:
         # Adjust predicted delta for the energy cost of the action itself
         delta = dict(p.predicted_delta)
@@ -501,9 +538,17 @@ def active_inference_step(
         raw_efe = compute_multistep_efe(state, delta, precision_weights, setpoints=setpoints)
         # Apply reward discount from nucleus accumbens (positive affect bonus)
         scores[p.name] = raw_efe * (1.0 - max(0.0, min(0.2, reward_discount)))
+        best_delta[p.name] = delta  # keep delta for component extraction
 
     best_name = min(scores, key=lambda k: scores[k])
     selected = next(p for p in proposals if p.name == best_name)
+
+    # Capture EFE component breakdown for the selected action (used by CollapseProbe)
+    _sel_delta = best_delta[best_name]
+    # total_efe is already in scores[best_name]; we recompute only to get the breakdown
+    _total_efe, efe_comps = compute_multistep_efe(  # type: ignore[misc]
+        state, _sel_delta, precision_weights, setpoints=setpoints, return_components=True
+    )
 
     reasoning_parts = [
         f"{p.name}: EFE={scores[p.name]:.2f}" for p in proposals
@@ -520,6 +565,7 @@ def active_inference_step(
         efe_scores=scores,
         reasoning=reasoning,
         inference_cost=cost,
+        efe_components=efe_comps,
     )
 
 

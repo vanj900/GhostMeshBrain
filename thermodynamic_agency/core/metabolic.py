@@ -83,6 +83,11 @@ _DECIDE_STREAK_FREE: int = 10   # streak ticks before fatigue kicks in
 _DECIDE_ETA_E: float = 0.01     # energy cost per streak tick beyond free threshold
 _DECIDE_ETA_T: float = 0.02     # heat cost per streak tick beyond free threshold
 
+# Affect → cortisol accumulation rate (per tick of negative affect).
+# Exposed as a module constant so the ablation runner can vary affect
+# sensitivity without monkey-patching the tick() method body.
+_CORTISOL_RATE: float = 0.02
+
 
 @dataclass
 class MetabolicState:
@@ -219,7 +224,7 @@ class MetabolicState:
         # At high levels it amplifies both waste accumulation and heat rise —
         # the organism literally runs hotter and dirtier under allostatic load.
         if self.affect < -0.3:
-            self.cortisol_proxy = min(1.0, self.cortisol_proxy + 0.02 * compute_load)
+            self.cortisol_proxy = min(1.0, self.cortisol_proxy + _CORTISOL_RATE * compute_load)
         else:
             self.cortisol_proxy = max(0.0, self.cortisol_proxy - 0.01)
 

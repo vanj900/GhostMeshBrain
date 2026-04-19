@@ -46,6 +46,32 @@ class TickRecord:
     self_mod_approved: int = 0    # Phase 4: self-mod proposals approved this tick
     self_mod_blocked: int = 0     # Phase 4: self-mod proposals blocked this tick
 
+    # ── Phase-transition / CollapseProbe fields ───────────────────────── #
+    # Precision weights per vital (from last DECIDE step; 0.0 on non-DECIDE ticks)
+    precision_energy: float = 0.0
+    precision_heat: float = 0.0
+    precision_waste: float = 0.0
+    precision_integrity: float = 0.0
+    precision_stability: float = 0.0
+
+    # EFE component breakdown for the selected action (DECIDE only)
+    efe_accuracy: float = 0.0     # precision-weighted prediction-error term
+    efe_complexity: float = 0.0   # prior-shift complexity term
+    efe_risk: float = 0.0         # death-proximity risk penalty
+    efe_wear: float = 0.0         # allostatic-load wear penalty
+
+    # Rolling 500-tick CollapseProbe statistics
+    action_entropy_w500: float = 0.0    # Shannon H over action distribution
+    mask_entropy_w500: float = 0.0      # Shannon H over mask distribution
+    guardian_fraction_w500: float = 0.0 # fraction in Guardian/SalienceNet modes
+    dreamer_fraction_w500: float = 0.0  # fraction in Dreamer/DefaultMode/CentralExec
+    plasticity_index_w500: float = 0.0  # dreamer / (guardian + ε)
+    d_allostatic: float = 0.0           # EMA derivative of allostatic load
+    d_energy: float = 0.0               # EMA derivative of energy
+    d_heat: float = 0.0                 # EMA derivative of heat
+    pre_collapse_score: float = 0.0     # composite 0-1 transition signal
+    near_transition: bool = False        # pre_collapse_score ≥ detection threshold
+
 
 class RunLogger:
     """Accumulates TickRecord snapshots and optionally streams them to a JSONL file.

@@ -7,7 +7,7 @@ later analysis or plotting.
 
 Usage
 -----
-    # 2000-tick run at default load, logs to /tmp/ghost_runs/vitals_cl1.0.jsonl
+    # 10000-tick run at default load, logs to /tmp/ghost_runs/vitals_cl1.0.jsonl
     python examples/stress_test.py
 
     # 5000-tick run at elevated load 1.8
@@ -240,8 +240,8 @@ def main() -> None:
         description="GhostMesh stress tester — long-run vital sign logger."
     )
     parser.add_argument(
-        "--ticks", type=int, default=2000,
-        help="Number of ticks per session (default: 2000)",
+        "--ticks", type=int, default=10000,
+        help="Number of ticks per session (default: 10000)",
     )
     parser.add_argument(
         "--compute-load", type=float, default=1.0,

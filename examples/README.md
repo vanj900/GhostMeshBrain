@@ -17,20 +17,20 @@ prints a summary table at the end.
 # Install the package first
 pip install -e ".[dev]"          # from repo root
 
-# 2000-tick run at default load (results → /tmp/ghost_runs/)
+# 10000-tick run at default load (results → /tmp/ghost_runs/)
 python examples/stress_test.py
 
 # 5000-tick elevated-stress run
 python examples/stress_test.py --ticks 5000 --compute-load 1.8
 
 # Four sequential sessions with different loads in one invocation (cl0.5, cl1.0, cl1.5, cl2.0)
-python examples/stress_test.py --multi --ticks 2000
+python examples/stress_test.py --multi --ticks 10000
 
 # Flat-world run (no stochastic events) — control condition
-python examples/stress_test.py --ticks 2000 --no-env-events
+python examples/stress_test.py --ticks 10000 --no-env-events
 
 # Reproducible run with fixed seed + matplotlib chart
-python examples/stress_test.py --ticks 2000 --seed 42 --plot
+python examples/stress_test.py --ticks 10000 --seed 42 --plot
 
 # Custom output directory
 python examples/stress_test.py --output-dir /tmp/my_runs

@@ -47,7 +47,7 @@ REPAIR_PROJECTED_STABILITY: float = 45.0    # trigger if projected stability cro
 STAGE_THRESHOLDS: dict[str, int] = {
     "emerging": 100,
     "aware": 500,
-    "evolved": 2000,
+    "evolved": 10000,
 }
 
 # Allostatic load constants (Phase 2)

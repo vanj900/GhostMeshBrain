@@ -1,0 +1,53 @@
+[
+  {
+    "ticks": 10000,
+    "compute_load": 1.0,
+    "elapsed_s": 18.68,
+    "ticks_per_sec": 535.3,
+    "survived": true,
+    "final_stage": "evolved",
+    "final_health": 90.7,
+    "final_energy": 80.7,
+    "final_heat": 12.7,
+    "final_integrity": 99.9,
+    "final_stability": 100.0,
+    "avg_energy": 57.5,
+    "avg_heat": 8.5,
+    "avg_waste": 4.8,
+    "avg_integrity": 98.8,
+    "avg_stability": 97.6,
+    "avg_affect": -0.0928,
+    "avg_free_energy": 8.12,
+    "avg_allostatic_load": 63.21,
+    "max_decide_streak": 272,
+    "near_death_ticks": 0,
+    "preventive_maintenance_index": 0.5,
+    "action_distribution": {
+      "FORAGE": 11,
+      "REST": 1679,
+      "REPAIR": 2,
+      "DECIDE": 8308
+    },
+    "event_distribution": {
+      "calm": 4523,
+      "energy_drain": 1006,
+      "integrity_hit": 680,
+      "thermal_spike": 970,
+      "waste_flood": 816,
+      "energy_spike": 1210,
+      "crisis": 306,
+      "stability_quake": 489
+    },
+    "mask_distribution": {
+      "Guardian": 2037,
+      "CentralExec": 2341,
+      "Judge": 2001,
+      "DefaultMode": 2481,
+      "Dreamer": 1140
+    },
+    "deaths": 0,
+    "lives": 1,
+    "label": "cl1.0",
+    "log_path": "/tmp/ghost_balanced2/vitals_cl1.0.jsonl"
+  }
+]

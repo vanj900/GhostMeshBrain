@@ -51,6 +51,7 @@ from thermodynamic_agency.cognition.counterfactual import CounterfactualEngine, 
 from thermodynamic_agency.cognition.language_cognition import LanguageCognition
 from thermodynamic_agency.cognition.homeostasis import HomeostasisAdapter
 from thermodynamic_agency.cognition.meta_cognitive_self_model import MetaCognitiveSelfModel
+from thermodynamic_agency.cognition.collapse_probe import CollapseProbe, CollapseSnapshot
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 from thermodynamic_agency.memory.working_memory import WorkingMemory, WorkingMemorySlot
 from thermodynamic_agency.memory.episodic_store import EpisodicStore
@@ -218,6 +219,20 @@ class GhostMesh:
 
         # Tracks precision regime set during the last DECIDE step for logging
         self._last_precision_regime: str = "dormant"
+
+        # Phase-transition instrumentation: rolling 500-tick CollapseProbe.
+        # Tracks plasticity/brittleness signals, mask distribution entropy,
+        # action entropy, and vital derivatives to detect the Dreamer→Guardian
+        # bifurcation described in Direction #1 of the breakthrough analysis.
+        self.collapse_probe: CollapseProbe = CollapseProbe(window=500)
+        # Cache of last probe snapshot and last DECIDE precision weights / EFE
+        # components so they can be included in TickRecord every tick.
+        self._last_collapse_snapshot: CollapseSnapshot | None = None
+        self._last_precision_weights: dict[str, float] = {}
+        self._last_efe_accuracy: float = 0.0
+        self._last_efe_complexity: float = 0.0
+        self._last_efe_risk: float = 0.0
+        self._last_efe_wear: float = 0.0
 
         # Register graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -503,6 +518,49 @@ class GhostMesh:
         # Update forward model with actual post-action vitals
         self.forward_model.update(self.state)
 
+        # Phase-transition probe: update rolling window and get latest snapshot.
+        # On DECIDE ticks the cached precision weights and EFE components are
+        # current; on other ticks zeros are passed (non-DECIDE ticks don't run
+        # the full inference pipeline, so no new weights / EFE to report).
+        # On DECIDE ticks the cached precision weights are current; on non-DECIDE
+        # ticks (FORAGE / REST / REPAIR) the inference pipeline didn't run, so
+        # pass an empty dict to avoid stale data polluting the rolling statistics.
+        _probe_precision = self._last_precision_weights if action == "DECIDE" else {}
+        _probe_snapshot = self.collapse_probe.update(
+            action=action,
+            mask=self.rotator.active.name,
+            free_energy=self.state.free_energy_estimate(),
+            allostatic_load=self.state.allostatic_load,
+            energy=self.state.energy,
+            heat=self.state.heat,
+            precision_weights=_probe_precision,
+            efe_accuracy=self._last_efe_accuracy,
+            efe_complexity=self._last_efe_complexity,
+        )
+        self._last_collapse_snapshot = _probe_snapshot
+
+        # Log near-transition events to diary for post-hoc analysis
+        if _probe_snapshot.is_near_transition:
+            self.diary.append(
+                DiaryEntry(
+                    tick=self.state.entropy,
+                    role="thought",
+                    content=(
+                        f"COLLAPSE_PROBE: pre_collapse_score={_probe_snapshot.pre_collapse_score:.3f} "
+                        f"guardian={_probe_snapshot.guardian_fraction:.2f} "
+                        f"plasticity={_probe_snapshot.plasticity_index:.3f} "
+                        f"d_al={_probe_snapshot.d_allostatic:.4f} "
+                        f"action_H={_probe_snapshot.action_entropy:.3f}"
+                    ),
+                    metadata={
+                        "near_transition": True,
+                        "pre_collapse_score": _probe_snapshot.pre_collapse_score,
+                        "guardian_fraction": _probe_snapshot.guardian_fraction,
+                        "plasticity_index": _probe_snapshot.plasticity_index,
+                    },
+                )
+            )
+
         # Log this tick
         self.run_logger.record(
             TickRecord(
@@ -529,6 +587,26 @@ class GhostMesh:
                 self_mod_blocked=(
                     self_mod_result.blocked_count if self_mod_result else 0
                 ),
+                # Phase-transition fields
+                precision_energy=self._last_precision_weights.get("energy", 0.0),
+                precision_heat=self._last_precision_weights.get("heat", 0.0),
+                precision_waste=self._last_precision_weights.get("waste", 0.0),
+                precision_integrity=self._last_precision_weights.get("integrity", 0.0),
+                precision_stability=self._last_precision_weights.get("stability", 0.0),
+                efe_accuracy=self._last_efe_accuracy,
+                efe_complexity=self._last_efe_complexity,
+                efe_risk=self._last_efe_risk,
+                efe_wear=self._last_efe_wear,
+                action_entropy_w500=_probe_snapshot.action_entropy,
+                mask_entropy_w500=_probe_snapshot.mask_entropy,
+                guardian_fraction_w500=_probe_snapshot.guardian_fraction,
+                dreamer_fraction_w500=_probe_snapshot.dreamer_fraction,
+                plasticity_index_w500=_probe_snapshot.plasticity_index,
+                d_allostatic=_probe_snapshot.d_allostatic,
+                d_energy=_probe_snapshot.d_energy,
+                d_heat=_probe_snapshot.d_heat,
+                pre_collapse_score=_probe_snapshot.pre_collapse_score,
+                near_transition=_probe_snapshot.is_near_transition,
             )
         )
 
@@ -780,6 +858,8 @@ class GhostMesh:
 
         # Merge amygdala precision overrides into base weights
         precision_weights = dict(precision_report.weights)
+        # Cache the merged precision weights for CollapseProbe / TickRecord logging
+        self._last_precision_weights = dict(precision_weights)
         if limbic_signal and limbic_signal.precision_overrides:
             for vital, boost in limbic_signal.precision_overrides.items():
                 if vital in precision_weights:
@@ -981,8 +1061,16 @@ class GhostMesh:
                     efe_scores=result.efe_scores,
                     reasoning=result.reasoning + f" [CF→{best_name}]",
                     inference_cost=result.inference_cost,
+                    efe_components=result.efe_components,
                 )
             selected = result.selected
+
+            # Cache EFE component breakdown for CollapseProbe / TickRecord logging
+            if result.efe_components is not None:
+                self._last_efe_accuracy = result.efe_components.accuracy
+                self._last_efe_complexity = result.efe_components.complexity
+                self._last_efe_risk = result.efe_components.risk
+                self._last_efe_wear = result.efe_components.wear
 
             # Add hierarchical EFE penalty to each proposal's score
             if hier_efe_penalty > 0:
@@ -1258,6 +1346,19 @@ class GhostMesh:
             "allostatic_load": round(s.allostatic_load, 3),
             "decide_streak": s.decide_streak,
         }
+        # Append phase-transition probe signals when a snapshot is available
+        if self._last_collapse_snapshot is not None:
+            snap = self._last_collapse_snapshot
+            record["pre_collapse_score"] = round(snap.pre_collapse_score, 4)
+            record["plasticity_index"] = round(snap.plasticity_index, 4)
+            record["guardian_fraction"] = round(snap.guardian_fraction, 4)
+            record["dreamer_fraction"] = round(snap.dreamer_fraction, 4)
+            record["action_entropy"] = round(snap.action_entropy, 4)
+            record["mask_entropy"] = round(snap.mask_entropy, 4)
+            record["d_allostatic"] = round(snap.d_allostatic, 5)
+            record["d_energy"] = round(snap.d_energy, 5)
+            record["d_heat"] = round(snap.d_heat, 5)
+            record["near_transition"] = snap.is_near_transition
         self._vitals_fh.write(json.dumps(record) + "\n")
 
     def _close_vitals_log(self) -> None:

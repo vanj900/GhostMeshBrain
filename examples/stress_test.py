@@ -58,6 +58,7 @@ def _run_session(
     stressor_prob: float = 0.0,
     stressor_mode: str = "flat",
     respawn: bool = True,
+    death_memory_enabled: bool = False,
 ) -> dict:
     """Run one simulation session and return a summary dict.
 
@@ -65,6 +66,10 @@ def _run_session(
     death until the cumulative tick target is reached.  All lives append to the
     same JSONL log so the full trajectory is preserved.  The summary includes
     ``deaths`` and ``lives`` counters for post-mortem analysis.
+
+    When *death_memory_enabled* is True each respawn carries a one-sentence
+    lesson extracted from the previous death into the next GhostMesh, turning
+    the chain of lives into a minimal evolutionary arc instead of pure amnesia.
     """
     import os
 
@@ -86,6 +91,7 @@ def _run_session(
     deaths = 0
     lives = 0
     mesh = None
+    death_memory: str | None = None
 
     while accumulated < ticks:
         remaining = ticks - accumulated
@@ -96,15 +102,31 @@ def _run_session(
             if os.path.exists(p):
                 os.remove(p)
         life_seed = (seed * 31 + lives) if seed is not None else None
-        mesh = GhostMesh(seed=life_seed)
+        mesh = GhostMesh(
+            seed=life_seed,
+            death_memory=death_memory if death_memory_enabled else None,
+            life_number=lives,
+        )
         mesh.run(max_ticks=remaining)
 
         life_ticks = len(mesh.run_logger.records)
         accumulated += life_ticks
 
         if life_ticks < remaining:
-            # Organism died before reaching the tick target
+            # Organism died before reaching the tick target — capture the lesson
             deaths += 1
+            if death_memory_enabled and mesh.last_death is not None:
+                exc_type = type(mesh.last_death).__name__
+                # Use the exception's state snapshot — always available even
+                # when the death happened on the very first tick (before any
+                # run_logger record was written).
+                ds = mesh.last_death.state
+                death_memory = (
+                    f"{exc_type}: heat={ds.get('heat', 0):.1f} "
+                    f"waste={ds.get('waste', 0):.1f} "
+                    f"allostatic={ds.get('allostatic_load', 0):.1f} "
+                    f"at tick {ds.get('entropy', 0)}"
+                )
 
         if not respawn:
             break
@@ -340,6 +362,15 @@ def main() -> None:
         "--no-respawn", dest="respawn", action="store_false",
         help="Stop at first death instead of restarting (single-life mode).",
     )
+    parser.add_argument(
+        "--death-memory", action="store_true", default=False,
+        help=(
+            "Pass a one-sentence death lesson from each life to the next spawn. "
+            "Turns the chain of lives into a minimal evolutionary arc instead of "
+            "pure amnesia. Each death type leaves a small scar biasing vitals "
+            "away from the same failure mode. Disabled by default (amnesia mode)."
+        ),
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -366,7 +397,7 @@ def main() -> None:
         print(f"\n[stress_test] Starting session '{label}' — {args.ticks} ticks, "
               f"compute_load={cl}, env_events={not args.no_env_events}, "
               f"mode={args.mode}, stressor_prob={args.stressor_prob}, "
-              f"respawn={args.respawn}")
+              f"respawn={args.respawn}, death_memory={args.death_memory}")
 
         summary = _run_session(
             ticks=args.ticks,
@@ -380,6 +411,7 @@ def main() -> None:
             stressor_prob=args.stressor_prob,
             stressor_mode=args.mode,
             respawn=args.respawn,
+            death_memory_enabled=args.death_memory,
         )
         summary["label"] = label
         summary["log_path"] = log_path

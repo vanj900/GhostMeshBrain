@@ -93,6 +93,8 @@ class GhostMesh:
         seed: int | None = None,
         world: "GridWorld | None" = None,
         learner: "QLearner | None" = None,
+        death_memory: str | None = None,
+        life_number: int = 1,
     ) -> None:
         # Re-read env vars at construction time so tests/callers can override them.
         self._state_file = os.environ.get("GHOST_STATE_FILE", STATE_FILE)
@@ -158,6 +160,12 @@ class GhostMesh:
         self._running = False
         # Vitals log file handle (opened lazily on first write)
         self._vitals_fh = None
+
+        # Death memory: one-sentence lesson carried over from the previous life
+        self._death_memory: str | None = death_memory
+        self._life_number: int = life_number
+        # Stores the exception that killed this instance (set in _handle_death)
+        self.last_death: GhostDeathException | None = None
 
         # ── Level 2: functional memory (always initialised) ────────────── #
         # Working memory and episodic store are lightweight in-memory
@@ -232,6 +240,18 @@ class GhostMesh:
                 metadata={"purity_mode": True, "bypass_attempted": self._purity_bypass_attempted},
             ))
 
+        # Death memory from a previous life: log it as the very first diary
+        # entry so the organism can "see" it during DECIDE/REPAIR, then apply
+        # a small permanent scar biasing vitals away from the same death cause.
+        if death_memory:
+            self.diary.append(DiaryEntry(
+                tick=self.state.entropy,
+                role="thought",
+                content=f"[PREVIOUS_LIFE_DEATH] {death_memory}",
+                metadata={"previous_life_death": True, "life_number": life_number},
+            ))
+            self._apply_death_scar(death_memory)
+
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
@@ -256,6 +276,11 @@ class GhostMesh:
         )
 
         try:
+            # Log respawn event to JSONL as the very first record of this life
+            # so downstream tooling can segment lives cleanly.
+            if self._death_memory:
+                self._write_respawn_event()
+
             while self._running:
                 if max_ticks is not None and ticks >= max_ticks:
                     break
@@ -1043,6 +1068,7 @@ class GhostMesh:
     # ------------------------------------------------------------------ #
 
     def _handle_death(self, exc: GhostDeathException) -> None:
+        self.last_death = exc
         cause = type(exc).__name__
         self.diary.append(
             DiaryEntry(
@@ -1122,6 +1148,62 @@ class GhostMesh:
         # Notify meta-cognitive layer of the continuity break so it can
         # register the epistemic discontinuity and adjust its priors.
         self.meta_self.handle_restart(previous_continuity_anchor=None)
+
+    def _apply_death_scar(self, death_memory: str) -> None:
+        """Apply a small permanent metabolic modifier based on the cause of the
+        previous death.
+
+        Each death type leaves a different scar that nudges the new organism's
+        starting state away from the specific failure mode that killed its
+        predecessor.  The effect is intentionally modest — a lesson, not
+        invincibility.
+
+        Scar table
+        ----------
+        ThermalDeathException  → start 3 heat / 2 waste lower (cooler, cleaner)
+        EnergyDeathException   → start with 5 extra energy (more reserves)
+        MemoryCollapseException→ start with 5 extra integrity (sturdier memory)
+        EntropyDeathException  → start with 5 extra stability (more entropic inertia)
+        """
+        exc_type = death_memory.split(":", 1)[0].strip()
+        if exc_type == "ThermalDeathException":
+            self.state.apply_action_feedback(delta_heat=-3.0, delta_waste=-2.0)
+            scar_desc = "thermal scar: Δheat=-3.0 Δwaste=-2.0 (cooler start)"
+        elif exc_type == "EnergyDeathException":
+            self.state.apply_action_feedback(delta_energy=5.0)
+            scar_desc = "energy scar: Δenergy=+5.0 (deeper reserves)"
+        elif exc_type == "MemoryCollapseException":
+            self.state.apply_action_feedback(delta_integrity=5.0)
+            scar_desc = "memory scar: Δintegrity=+5.0 (hardened memory)"
+        elif exc_type == "EntropyDeathException":
+            self.state.apply_action_feedback(delta_stability=5.0)
+            scar_desc = "entropy scar: Δstability=+5.0 (entropic inertia)"
+        else:
+            scar_desc = "unknown death type — no scar applied"
+
+        self.diary.append(DiaryEntry(
+            tick=self.state.entropy,
+            role="thought",
+            content=f"[DEATH_SCAR] Life {self._life_number}: {scar_desc}.",
+            metadata={"death_scar": True, "exc_type": exc_type, "life_number": self._life_number},
+        ))
+
+    def _write_respawn_event(self) -> None:
+        """Write a respawn sentinel record to the vitals JSONL log.
+
+        This lets downstream tooling (e.g. plot_vitals.py) draw life boundaries
+        and annotate each segment with the death cause that preceded it.
+        """
+        if not self._vitals_log:
+            return
+        if self._vitals_fh is None:
+            self._vitals_fh = open(self._vitals_log, "a", buffering=1)
+        record = {
+            "event": "respawn",
+            "life_number": self._life_number,
+            "previous_death": self._death_memory,
+        }
+        self._vitals_fh.write(json.dumps(record) + "\n")
 
     def _load_state(self) -> tuple[MetabolicState, bool]:
         """Load MetabolicState from disk, or create a fresh one.

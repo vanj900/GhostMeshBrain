@@ -252,4 +252,10 @@ def _default_priors() -> list[BeliefPrior]:
         BeliefPrior(name="ethical_invariants_immutable", value=True, precision=5.0),
         BeliefPrior(name="resource_scarcity", value=0.5, precision=1.5),
         BeliefPrior(name="environment_hostile", value=0.3, precision=1.2),
+        # Terrain and social priors (evaluated when new action types arise)
+        BeliefPrior(name="forest_traversal_safe", value=True, precision=1.0),
+        BeliefPrior(name="rocky_terrain_repairable", value=True, precision=1.0),
+        BeliefPrior(name="cooperation_reciprocal", value=True, precision=1.2),
+        BeliefPrior(name="reputation_matters", value=True, precision=1.1),
+        BeliefPrior(name="predator_threat_real", value=0.5, precision=1.3),
     ]

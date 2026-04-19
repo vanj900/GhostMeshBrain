@@ -13,12 +13,43 @@ Any agent can issue a ``broadcast(message)`` call.  Every broadcast costs the
 messages are queued per agent so the caller can log them or pass them to
 higher cognition.
 
+Social Actions
+--------------
+Beyond BROADCAST, agents can perform:
+
+SIGNAL        — cheap broadcast to nearby agents (-1 energy, +1 heat).
+COOPERATE     — share energy with all nearby agents (costs sender 5 energy;
+                each visible neighbour gains 3 energy).  Increases sender
+                reputation.
+BETRAY        — steal from the nearest visible agent (+8 energy to actor;
+                -4 energy to victim).  Decreases actor reputation.
+OBSERVE_OTHER — watch a nearby agent to learn (-2 energy, +1 heat; grants
+                a small Q-table visit-count boost for the actor).
+
+Reputation System
+-----------------
+A shared ``ReputationSystem`` tracks each agent's trust score [0, 1].
+COOPERATE raises reputation by 0.1; BETRAY lowers it by 0.2.  Scores are
+exposed in ``AgentResult.final_reputation`` and can be read by other agents
+through their observation.
+
 Social Stressors
 ----------------
 Agents observe other agents within their 5×5 vision window.  The
 ``WorldObservation.social_stress`` scalar (0–1) reflects how crowded the
 neighbourhood is.  The runner logs this as a ``"Social Stressor"`` diary
 entry when ``social_stress > SOCIAL_STRESS_THRESHOLD``.
+
+Global World Events
+-------------------
+A ``WorldEventSystem`` fires storms (heat+waste spikes to all agents),
+droughts (slow resource respawn), and predator events (amygdala threat
+signal in observations).
+
+Diverse Personalities
+---------------------
+Agents are spawned with distinct starting masks to seed different behavioural
+archetypes:  Guardian, Dreamer, Courier, Healer, Judge (cycling for N > 5).
 
 Lifeboat Scenario
 -----------------
@@ -29,10 +60,11 @@ Usage
 -----
     from thermodynamic_agency.world.multi_agent_runner import MultiAgentRunner
 
-    runner = MultiAgentRunner(n_agents=3, seed=42, respawn=False)
-    results = runner.run(max_ticks=200)
+    runner = MultiAgentRunner(n_agents=4, seed=42, respawn=True)
+    results = runner.run(max_ticks=300)
     for i, res in enumerate(results):
-        print(f"Agent {i}: survived={res['survived']} ticks={res['ticks']}")
+        print(f"Agent {i}: survived={res.survived} ticks={res.ticks_alive} "
+              f"reputation={res.final_reputation:.2f}")
 """
 
 from __future__ import annotations
@@ -47,9 +79,13 @@ from thermodynamic_agency.world.grid_world import (
     WorldAction,
     WorldObservation,
     WorldStepResult,
+    WorldEvent,
+    WorldEventSystem,
     CellType,
     _GATHERABLE,  # noqa: PLC2701  (internal constant, needed for contention logic)
     _RESPAWN_TICKS,
+    _STORM_HEAT_HIT,
+    _STORM_WASTE_HIT,
 )
 from thermodynamic_agency.learning.reward import compute_reward
 from thermodynamic_agency.learning.q_learner import QLearner, encode_state
@@ -65,8 +101,61 @@ from thermodynamic_agency.core.exceptions import GhostDeathException
 BROADCAST_ENERGY_COST: float = float(os.environ.get("BROADCAST_E_COST", "3.0"))
 BROADCAST_HEAT_COST: float = float(os.environ.get("BROADCAST_H_COST", "2.0"))
 
+# Social action costs / rewards
+SIGNAL_ENERGY_COST: float = 1.0
+SIGNAL_HEAT_COST: float = 1.0
+
+COOPERATE_SENDER_COST: float = 5.0    # energy taken from cooperating agent
+COOPERATE_RECEIVER_GAIN: float = 3.0  # energy given to each visible neighbour
+
+BETRAY_ACTOR_GAIN: float = 8.0        # energy stolen from victim
+BETRAY_VICTIM_COST: float = 4.0       # energy taken from victim
+
+OBSERVE_ENERGY_COST: float = 2.0
+OBSERVE_HEAT_COST: float = 1.0
+
 # Social stress level above which a diary entry is created.
 SOCIAL_STRESS_THRESHOLD: float = 0.25
+
+# Starting personality masks per agent index (cycles for N > 5)
+_STARTING_MASKS: list[str] = ["Guardian", "Dreamer", "Courier", "Healer", "Judge"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reputation System
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ReputationSystem:
+    """Simple per-agent trust tracker [0, 1] updated by social actions.
+
+    All agents start at a neutral score of 0.5.  Cooperative behaviour
+    raises scores; betrayals lower them.  Scores are precision-weighted —
+    a highly-reputed agent's COOPERATE signal is worth more.
+
+    Parameters
+    ----------
+    n_agents:
+        Number of agents to track.
+    """
+
+    def __init__(self, n_agents: int) -> None:
+        self._scores: dict[int, float] = {i: 0.5 for i in range(n_agents)}
+
+    def cooperated(self, agent_id: int) -> None:
+        """Record a cooperative action, raising the agent's trust score."""
+        self._scores[agent_id] = min(1.0, self._scores[agent_id] + 0.10)
+
+    def betrayed(self, agent_id: int) -> None:
+        """Record a betrayal, lowering the agent's trust score."""
+        self._scores[agent_id] = max(0.0, self._scores[agent_id] - 0.20)
+
+    def score(self, agent_id: int) -> float:
+        """Return the current trust score for *agent_id* (0–1)."""
+        return self._scores.get(agent_id, 0.5)
+
+    def all_scores(self) -> dict[int, float]:
+        """Return a copy of all trust scores."""
+        return dict(self._scores)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +174,13 @@ class AgentResult:
     contested_losses: int
     broadcasts_sent: int
     final_vitals: dict[str, float]
+    # Social action tallies
+    signals_sent: int = 0
+    cooperations: int = 0
+    betrayals: int = 0
+    observations_made: int = 0
+    final_reputation: float = 0.5   # trust score at end of episode
+    starting_mask: str = "Guardian"  # personality mask this agent started with
 
 
 @dataclass
@@ -104,6 +200,12 @@ class _AgentState:
     contested_losses: int = 0
     broadcasts_sent: int = 0
     inbox: list[str] = field(default_factory=list)
+    # Social action counters
+    signals_sent: int = 0
+    cooperations: int = 0
+    betrayals: int = 0
+    observations_made: int = 0
+    starting_mask: str = "Guardian"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,8 +245,11 @@ class MultiAgentRunner:
         seed: int | None = None,
         respawn: bool = True,
         max_ticks: int = 300,
-        world_width: int = 10,
-        world_height: int = 10,
+        world_width: int = 20,
+        world_height: int = 20,
+        storm_prob: float = 0.02,
+        predator_prob: float = 0.015,
+        drought_prob: float = 0.01,
     ) -> None:
         self.n_agents = n_agents
         self.respawn = respawn
@@ -159,6 +264,17 @@ class MultiAgentRunner:
             seed=seed,
             allow_respawn=respawn,
         )
+
+        # Global event system shared by all agents
+        self._events = WorldEventSystem(
+            storm_prob=storm_prob,
+            predator_prob=predator_prob,
+            drought_prob=drought_prob,
+            seed=seed,
+        )
+
+        # Reputation system (shared social memory)
+        self._reputation = ReputationSystem(n_agents=n_agents)
 
         self._agents: list[_AgentState] = []
 
@@ -196,6 +312,7 @@ class MultiAgentRunner:
     def _setup(self) -> None:
         """Initialise the arena and spawn all agents."""
         self._arena.reset()
+        self._reputation = ReputationSystem(n_agents=self.n_agents)
         self._agents = []
 
         for i in range(self.n_agents):
@@ -210,6 +327,14 @@ class MultiAgentRunner:
             os.environ["GHOST_ENV_EVENTS"] = "0"
 
             mesh = GhostMesh(seed=seed_i)
+
+            # Assign diverse starting personalities — prevents all agents from
+            # converging to the same Guardian attractor from the first tick.
+            starting_mask = _STARTING_MASKS[i % len(_STARTING_MASKS)]
+            mesh.rotator.maybe_rotate(
+                current_tick=0, force=starting_mask
+            )
+
             learner = QLearner(seed=seed_i)
 
             # Place each agent at a distinct empty cell
@@ -227,6 +352,7 @@ class MultiAgentRunner:
                 learner=learner,
                 obs=obs,
                 pos=pos,
+                starting_mask=starting_mask,
             )
             self._agents.append(agent)
 
@@ -241,6 +367,18 @@ class MultiAgentRunner:
         if self.respawn:
             self._arena._advance_respawn_timers()
 
+        # Fire global world event (storms, droughts, predators)
+        world_event = self._events.tick(tick)
+
+        # Apply storm hits to all living agents immediately
+        if world_event.storm_hit:
+            for agent in self._agents:
+                if agent.alive:
+                    agent.mesh.state.apply_action_feedback(
+                        delta_heat=_STORM_HEAT_HIT,
+                        delta_waste=_STORM_WASTE_HIT,
+                    )
+
         # Determine intended actions for all agents (simultaneous intention)
         intentions: list[tuple[int, str]] = []  # (agent_id, action_str)
         for agent in self._agents:
@@ -248,6 +386,14 @@ class MultiAgentRunner:
                 continue
             self._arena._agent_pos = agent.pos
             available = [a.value for a in self._arena.available_actions()]
+            # Inject social and broadcast actions so they are Q-learnable
+            available += [
+                WorldAction.BROADCAST.value,
+                WorldAction.SIGNAL.value,
+                WorldAction.COOPERATE.value,
+                WorldAction.BETRAY.value,
+                WorldAction.OBSERVE_OTHER.value,
+            ]
             vitals = agent.mesh.state.to_dict()
             state_key = encode_state(vitals, agent.obs)
             action_str = agent.learner.select_action(state_key, available)
@@ -268,7 +414,9 @@ class MultiAgentRunner:
         # Execute actions
         for agent_id, action_str in intentions:
             agent = self._agents[agent_id]
-            self._execute_agent_action(agent, action_str, gather_claims, tick)
+            self._execute_agent_action(
+                agent, action_str, gather_claims, tick, world_event
+            )
 
     def _execute_agent_action(
         self,
@@ -276,6 +424,7 @@ class MultiAgentRunner:
         action_str: str,
         gather_claims: dict[tuple[int, int], int],
         tick: int,
+        world_event: WorldEvent | None = None,
     ) -> None:
         """Execute one action for one agent and update learning subsystems."""
         vitals_before = agent.mesh.state.to_dict()
@@ -297,6 +446,64 @@ class MultiAgentRunner:
             for other in self._agents:
                 if other.agent_id != agent.agent_id and other.alive:
                     other.inbox.append(msg)
+            vitals_after = agent.mesh.state.to_dict()
+
+        elif action_str == WorldAction.SIGNAL.value:
+            # Cheap broadcast to visible neighbours only
+            agent.mesh.state.apply_action_feedback(
+                delta_energy=-SIGNAL_ENERGY_COST,
+                delta_heat=SIGNAL_HEAT_COST,
+            )
+            agent.signals_sent += 1
+            msg = f"signal:agent{agent.agent_id}@tick{tick}"
+            for other in self._agents:
+                if (
+                    other.agent_id != agent.agent_id
+                    and other.alive
+                    and other.pos in {
+                        (agent.pos[0] + dx, agent.pos[1] + dy)
+                        for dx in range(-2, 3)
+                        for dy in range(-2, 3)
+                    }
+                ):
+                    other.inbox.append(msg)
+            vitals_after = agent.mesh.state.to_dict()
+
+        elif action_str == WorldAction.COOPERATE.value:
+            # Share energy with all nearby living agents
+            nearby = self._nearby_agents(agent)
+            agent.mesh.state.apply_action_feedback(
+                delta_energy=-COOPERATE_SENDER_COST,
+            )
+            for other in nearby:
+                other.mesh.state.apply_action_feedback(
+                    delta_energy=COOPERATE_RECEIVER_GAIN,
+                )
+            self._reputation.cooperated(agent.agent_id)
+            agent.cooperations += 1
+            vitals_after = agent.mesh.state.to_dict()
+
+        elif action_str == WorldAction.BETRAY.value:
+            # Steal energy from the nearest visible agent
+            nearest = self._nearest_agent(agent)
+            if nearest is not None:
+                nearest.mesh.state.apply_action_feedback(
+                    delta_energy=-BETRAY_VICTIM_COST,
+                )
+                agent.mesh.state.apply_action_feedback(
+                    delta_energy=BETRAY_ACTOR_GAIN,
+                )
+                self._reputation.betrayed(agent.agent_id)
+                agent.betrayals += 1
+            vitals_after = agent.mesh.state.to_dict()
+
+        elif action_str == WorldAction.OBSERVE_OTHER.value:
+            # Watch a nearby agent — pays cognitive cost, boosts world-model
+            agent.mesh.state.apply_action_feedback(
+                delta_energy=-OBSERVE_ENERGY_COST,
+                delta_heat=OBSERVE_HEAT_COST,
+            )
+            agent.observations_made += 1
             vitals_after = agent.mesh.state.to_dict()
 
         elif action_str in (
@@ -330,7 +537,9 @@ class MultiAgentRunner:
                 # We won the claim race — gather the resource
                 cell = self._arena._cell_at(pos)
                 if cell in _GATHERABLE:
-                    _merge_delta(metabolic_delta, _GATHER_EFFECTS.get(cell, {}))
+                    base_effects = _GATHER_EFFECTS.get(cell, {})
+                    scaled = self._arena._apply_season_to_gather(cell, base_effects)
+                    _merge_delta(metabolic_delta, scaled)
                     x, y = pos
                     self._arena._grid[y][x] = CellType.EMPTY.value
                     from thermodynamic_agency.world.grid_world import _RespawnTimer
@@ -352,7 +561,9 @@ class MultiAgentRunner:
                 # No prior claim (single-agent or unclaimed cell)
                 cell = self._arena._cell_at(pos)
                 if cell in _GATHERABLE:
-                    _merge_delta(metabolic_delta, _GATHER_EFFECTS.get(cell, {}))
+                    base_effects = _GATHER_EFFECTS.get(cell, {})
+                    scaled = self._arena._apply_season_to_gather(cell, base_effects)
+                    _merge_delta(metabolic_delta, scaled)
                     x, y = pos
                     self._arena._grid[y][x] = CellType.EMPTY.value
                     from thermodynamic_agency.world.grid_world import _RespawnTimer
@@ -403,12 +614,16 @@ class MultiAgentRunner:
         reward = reward_sig.total
         agent.total_reward += reward
 
-        # Update observation with social context
-        other_positions = self._other_positions(
-            agent.agent_id, agent.pos
-        )
+        # Update observation with social context and world event signals
+        other_positions = self._other_positions(agent.agent_id, agent.pos)
         self._arena._agent_pos = agent.pos
-        next_obs = self._arena.get_observation(other_agent_positions=other_positions)
+        predator_threat = world_event.predator_threat if world_event else 0.0
+        active_event = world_event.label if world_event else ""
+        next_obs = self._arena.get_observation(
+            other_agent_positions=other_positions,
+            predator_threat=predator_threat,
+            active_world_event=active_event,
+        )
         agent.obs = next_obs
 
         # Log social stressor to diary
@@ -424,10 +639,30 @@ class MultiAgentRunner:
                 metadata={"source": "multi_agent_runner", "nearby": len(next_obs.nearby_agents)},
             ))
 
+        # Log predator threat to diary when active
+        if next_obs.predator_threat > 0.0:
+            from thermodynamic_agency.memory.diary import DiaryEntry
+            agent.mesh.diary.append(DiaryEntry(
+                tick=agent.mesh.state.entropy,
+                role="stressor",
+                content=(
+                    f"Predator Threat: threat={next_obs.predator_threat:.2f} "
+                    f"event={active_event!r}"
+                ),
+                metadata={"source": "world_event_system", "event": active_event},
+            ))
+
         # Q-learner update
         next_state_key = encode_state(vitals_after, next_obs)
         self._arena._agent_pos = agent.pos
-        next_available = [a.value for a in self._arena.available_actions()]
+        # Include social actions in next available set
+        next_available = [a.value for a in self._arena.available_actions()] + [
+            WorldAction.BROADCAST.value,
+            WorldAction.SIGNAL.value,
+            WorldAction.COOPERATE.value,
+            WorldAction.BETRAY.value,
+            WorldAction.OBSERVE_OTHER.value,
+        ]
         agent.learner.update(
             state_key, action_str, reward, next_state_key,
             done=False, next_actions=next_available,
@@ -449,6 +684,27 @@ class MultiAgentRunner:
             if a.alive and a.agent_id != my_id
         ]
 
+    def _nearby_agents(self, agent: _AgentState) -> list[_AgentState]:
+        """Return living agents within the 5×5 vision window of *agent*."""
+        ax, ay = agent.pos
+        radius = self._arena.vision_radius
+        result = []
+        for other in self._agents:
+            if not other.alive or other.agent_id == agent.agent_id:
+                continue
+            ox, oy = other.pos
+            if abs(ox - ax) <= radius and abs(oy - ay) <= radius:
+                result.append(other)
+        return result
+
+    def _nearest_agent(self, agent: _AgentState) -> "_AgentState | None":
+        """Return the nearest visible living agent, or None if none visible."""
+        nearby = self._nearby_agents(agent)
+        if not nearby:
+            return None
+        ax, ay = agent.pos
+        return min(nearby, key=lambda o: abs(o.pos[0] - ax) + abs(o.pos[1] - ay))
+
     def _finalise(self, agent: _AgentState) -> AgentResult:
         """Convert internal agent state to a public AgentResult."""
         return AgentResult(
@@ -460,4 +716,10 @@ class MultiAgentRunner:
             contested_losses=agent.contested_losses,
             broadcasts_sent=agent.broadcasts_sent,
             final_vitals=agent.mesh.state.to_dict(),
+            signals_sent=agent.signals_sent,
+            cooperations=agent.cooperations,
+            betrayals=agent.betrayals,
+            observations_made=agent.observations_made,
+            final_reputation=self._reputation.score(agent.agent_id),
+            starting_mask=agent.starting_mask,
         )

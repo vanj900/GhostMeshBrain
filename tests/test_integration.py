@@ -72,3 +72,59 @@ class TestPulseIntegration:
         initial_energy = mesh.state.energy
         mesh._forage()
         assert mesh.state.energy > initial_energy
+
+    def test_autonomic_intervention_logs_diary_entry(
+        self, tmp_state_file, tmp_diary_path, monkeypatch
+    ):
+        """Autonomic intervention must fire and write a diary entry when CollapseProbe
+        flags near_transition at evolved stage."""
+        monkeypatch.setenv("GHOST_STATE_FILE", tmp_state_file)
+        monkeypatch.setenv("GHOST_DIARY_PATH", tmp_diary_path)
+        monkeypatch.setenv("GHOST_HUD", "0")
+        monkeypatch.setenv("GHOST_PULSE", "0")
+        monkeypatch.setenv("GHOST_ENV_EVENTS", "0")
+
+        from thermodynamic_agency.cognition.collapse_probe import CollapseSnapshot
+
+        mesh = GhostMesh()
+        # Inject an evolved state so the stage gate passes
+        mesh.state.stage = "evolved"
+
+        # Inject a fake near-transition snapshot from the "previous" tick
+        fake_snap = CollapseSnapshot(
+            window=500,
+            ticks_in_window=200,
+            action_entropy=0.2,
+            mask_entropy=0.3,
+            guardian_fraction=0.65,
+            dreamer_fraction=0.03,
+            plasticity_index=0.04,
+            mean_free_energy=25.0,
+            d_allostatic=0.6,
+            d_energy=-0.1,
+            d_heat=0.05,
+            mean_precision_energy=2.0,
+            mean_precision_heat=3.0,
+            mean_precision_waste=1.5,
+            mean_precision_integrity=2.5,
+            mean_precision_stability=2.0,
+            mean_efe_accuracy=5.0,
+            mean_efe_complexity=2.0,
+            pre_collapse_score=0.45,
+            is_near_transition=True,
+        )
+        mesh._last_collapse_snapshot = fake_snap
+
+        entries_before = mesh.diary.entry_count()
+        mesh._apply_autonomic_intervention()
+        entries_after = mesh.diary.entry_count()
+
+        # Should have added a diary entry
+        assert entries_after > entries_before
+        recent = mesh.diary.recent(n=5)
+        intervention_entries = [
+            e for e in recent if "AUTONOMIC_INTERVENTION" in e.content
+        ]
+        assert intervention_entries, "Expected an AUTONOMIC_INTERVENTION diary entry"
+        # Mask should now be Dreamer
+        assert mesh.rotator.active.name == "Dreamer"

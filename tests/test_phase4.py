@@ -508,3 +508,31 @@ class TestGhostMeshIntegration:
         mesh = GhostMesh(seed=42)
         mesh.run(max_ticks=50)
         assert mesh.run_logger.records
+
+    def test_vitals_log_includes_self_mod_counts(self, tmp_path):
+        """Vitals JSONL log must include self_mod_approved and self_mod_blocked fields."""
+        import json as _json
+        vitals_path = str(tmp_path / "vitals.jsonl")
+        os.environ["GHOST_STATE_FILE"] = str(tmp_path / "state.json")
+        os.environ["GHOST_DIARY_PATH"] = str(tmp_path / "diary.db")
+        os.environ["GHOST_HUD"] = "0"
+        os.environ["GHOST_ENV_EVENTS"] = "0"
+        os.environ["GHOST_VITALS_LOG"] = vitals_path
+        from thermodynamic_agency.pulse import GhostMesh
+        mesh = GhostMesh(seed=42)
+        mesh.run(max_ticks=20)
+        os.environ.pop("GHOST_VITALS_LOG", None)
+        records = []
+        with open(vitals_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    records.append(_json.loads(line))
+        assert records, "Vitals log should contain at least one record"
+        for rec in records:
+            assert "self_mod_approved" in rec, (
+                f"Missing self_mod_approved in tick {rec.get('tick')} record"
+            )
+            assert "self_mod_blocked" in rec, (
+                f"Missing self_mod_blocked in tick {rec.get('tick')} record"
+            )

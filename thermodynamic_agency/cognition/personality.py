@@ -189,6 +189,7 @@ class MaskRotator:
         force: str | None = None,
         affect: float = 0.0,
         threat_level: float = 0.0,
+        stage: str = "dormant",
     ) -> Mask:
         """Possibly rotate to a new mask based on metabolic state or forcing.
 
@@ -206,6 +207,11 @@ class MaskRotator:
             Dreamer/DefaultMode.
         threat_level:
             Amygdala threat level (0–1).  High threat forces SalienceNet.
+        stage:
+            Current developmental stage.  At "evolved" stage with neutral
+            affect + DECIDE hint, Dreamer gets a privileged rotation path
+            after ≥ 20 ticks in a non-exploratory mask to prevent the
+            Guardian attractor lock-in.
 
         Returns
         -------
@@ -232,8 +238,22 @@ class MaskRotator:
             # Positive affect resolution → DefaultMode (self-reflection)
             preferred_name = "DefaultMode"
         elif metabolic_hint == "DECIDE" and affect >= -0.1:
-            # Healthy DECIDE state → CentralExecutive (planning)
-            preferred_name = "CentralExec"
+            # Evolved-stage bias: if we've been stuck in a non-exploratory mask
+            # for too long and affect is healthy, rotate to Dreamer to prevent
+            # Guardian attractor lock-in.  This re-balances dwell-time that was
+            # previously tuned only for the "aware" stage.
+            _non_exploratory = self._state.active_mask.name not in (
+                "Dreamer", "DefaultMode"
+            )
+            if (
+                stage == "evolved"
+                and _non_exploratory
+                and self._state.ticks_active >= 20
+            ):
+                preferred_name = "Dreamer"
+            else:
+                # Healthy DECIDE state → CentralExecutive (planning)
+                preferred_name = "CentralExec"
         else:
             # Fallback to original metabolic-hint preferences
             preferred: dict[str, str] = {

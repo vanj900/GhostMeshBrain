@@ -288,6 +288,7 @@ planning.  Every layer pays energy and heat to operate.
 | CognitiveBattery | Six-task greedy-policy evaluation (nav/puzzle/adapt/resource/social/prediction) | `evaluation/cognitive_battery.py` | ✅ implemented |
 | G-factor (PCA) | Emergent general-intelligence score across battery runs | `evaluation/g_factor.py` | ✅ implemented |
 | RunLogger | Structured per-tick JSONL vital-sign logging | `run_logger.py` | ✅ implemented |
+| MetaCognitiveSelfModel | Second-order self-model; narrative coherence + epistemic continuity tracking | `cognition/meta_cognitive_self_model.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -323,7 +324,8 @@ Every new layer charges the organism's budget:
 thermodynamic_agency/
 ├── core/
 │   ├── exceptions.py        # Death exceptions (Energy/Thermal/Memory/Entropy)
-│   └── metabolic.py         # MetabolicState + tick() + hormone proxies (cortisol/dopamine)
+│   ├── metabolic.py         # MetabolicState + tick() + hormone proxies (cortisol/dopamine)
+│   └── environment.py       # EnvironmentalEvent + sample_event() — tick-level stochastic world events
 ├── cognition/
 │   ├── inference.py         # active_inference_step + compute_efe + ForwardModel
 │   ├── ethics.py            # EthicalEngine — immune system (non-bypassable gate)
@@ -342,7 +344,9 @@ thermodynamic_agency/
 │   ├── counterfactual.py    # CounterfactualEngine — depth-first fear-based forward simulation
 │   ├── homeostasis.py       # HomeostasisAdapter — hebbian setpoint drift (Genesis-bounded ±15 %)
 │   ├── language_cognition.py # LanguageCognition — LLM as cognitive co-processor (opt-in)
-│   └── llm_narrator.py      # LLMNarrator — "Professor" constraint layer (Phase 6)
+│   ├── llm_narrator.py      # LLMNarrator — "Professor" constraint layer (Phase 6)
+│   ├── environment.py       # EnvironmentStressor — stochastic external disturbances (flat/bursty/hostile_windows)
+│   └── meta_cognitive_self_model.py  # MetaCognitiveSelfModel — second-order self-model, narrative coherence + epistemic continuity
 ├── memory/
 │   ├── diary.py             # RAM-ephemeral SQLite diary (/dev/shm)
 │   ├── episodic_store.py    # Long-term episodic memory — similarity-based recall

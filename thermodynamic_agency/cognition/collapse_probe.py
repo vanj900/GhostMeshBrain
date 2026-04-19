@@ -32,7 +32,9 @@ computes, on every ``update()`` call:
                        action_entropy.  Rises toward 1 in the pre-collapse
                        window.
 - **is_near_transition** ``True`` when pre_collapse_score exceeds the
-                       detection threshold (default 0.65).
+                       detection threshold (default 0.38), or when the lagged
+                       detector fires (d_AL spike within last 300 ticks *and*
+                       plasticity_index is still falling below its slow EMA).
 
 Usage
 -----
@@ -66,6 +68,10 @@ from dataclasses import dataclass, field
 _GUARDIAN_MASKS: frozenset[str] = frozenset({"Guardian", "SalienceNet"})
 _DREAMER_MASKS: frozenset[str] = frozenset({"Dreamer", "DefaultMode", "CentralExec"})
 
+# Minimum d_allostatic value (EMA derivative, per tick) that counts as an
+# allostatic-load spike for the lagged transition detector.
+_AL_SPIKE_THRESHOLD: float = 0.5
+
 
 # ------------------------------------------------------------------ #
 # Snapshot dataclass                                                   #
@@ -95,6 +101,7 @@ class CollapseSnapshot:
     mean_efe_complexity: float     # rolling mean EFE complexity component
     pre_collapse_score: float      # composite 0-1 transition signal
     is_near_transition: bool       # True when pre_collapse_score ≥ threshold
+                                   # OR lagged d_AL spike + falling plasticity
 
 
 # ------------------------------------------------------------------ #
@@ -131,7 +138,11 @@ class CollapseProbe:
         Rolling buffer size in ticks (default 500).
     detection_threshold:
         pre_collapse_score above which ``is_near_transition`` is True
-        (default 0.65).
+        (default 0.38).  The probe also fires via a lagged condition: if
+        ``d_allostatic`` exceeded ``_AL_SPIKE_THRESHOLD`` (0.5) at any point
+        in the last 300 ticks *and* the current ``plasticity_index`` is below
+        its slow EMA (i.e. still falling), ``is_near_transition`` is set even
+        when ``pre_collapse_score`` is below the threshold.
     ema_alpha:
         Exponential moving-average decay rate for derivative estimation
         (default 0.05 — ~20-tick smoothing).
@@ -143,10 +154,15 @@ class CollapseProbe:
         out of 500).
     """
 
+    # Slow EMA alpha for plasticity-index trend tracking used by the lagged
+    # transition detector (~50-tick smoothing; kept separate from _alpha so
+    # the two smoothing rates can be tuned independently).
+    _PLASTICITY_EMA_ALPHA: float = 0.02
+
     def __init__(
         self,
         window: int = 500,
-        detection_threshold: float = 0.65,
+        detection_threshold: float = 0.38,
         ema_alpha: float = 0.05,
         min_fill_fraction: float = 0.2,
     ) -> None:
@@ -162,6 +178,10 @@ class CollapseProbe:
         self._d_allostatic: float = 0.0
         self._d_energy: float = 0.0
         self._d_heat: float = 0.0
+        # Lagged-transition state
+        self._d_al_history: deque[float] = deque(maxlen=300)
+        self._d_al_spike_count: int = 0   # O(1) count of values > _AL_SPIKE_THRESHOLD
+        self._plasticity_ema: float | None = None
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -228,7 +248,26 @@ class CollapseProbe:
         )
         self._buf.append(slot)
         self._update_derivatives(allostatic_load, energy, heat)
-        return self._compute_snapshot()
+        # Maintain the lagged-spike history and its O(1) spike counter.
+        # Before appending, check whether the oldest element (about to be
+        # evicted when the deque is full) was a spike so we can decrement.
+        if len(self._d_al_history) == self._d_al_history.maxlen:
+            if self._d_al_history[0] > _AL_SPIKE_THRESHOLD:
+                self._d_al_spike_count -= 1
+        self._d_al_history.append(self._d_allostatic)
+        if self._d_allostatic > _AL_SPIKE_THRESHOLD:
+            self._d_al_spike_count += 1
+        snap = self._compute_snapshot()
+        # Update slow plasticity EMA *after* snapshot so _compute_snapshot()
+        # compares the *current* plasticity against the previous-tick trend.
+        _a = self._PLASTICITY_EMA_ALPHA
+        if self._plasticity_ema is None:
+            self._plasticity_ema = snap.plasticity_index
+        else:
+            self._plasticity_ema = (
+                (1.0 - _a) * self._plasticity_ema + _a * snap.plasticity_index
+            )
+        return snap
 
     @property
     def window(self) -> int:
@@ -243,6 +282,9 @@ class CollapseProbe:
         self._d_allostatic = 0.0
         self._d_energy = 0.0
         self._d_heat = 0.0
+        self._d_al_history.clear()
+        self._d_al_spike_count = 0
+        self._plasticity_ema = None
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -341,10 +383,24 @@ class CollapseProbe:
         # ``min_fill_fraction`` of the configured window.  This prevents
         # cold-start false positives when the rolling window has only a
         # handful of ticks and statistical estimates are not yet meaningful.
-        is_near_transition = (
-            pre_collapse_score >= self._threshold
-            and n >= self._min_fill
+        #
+        # Primary condition: composite pre_collapse_score exceeds threshold.
+        _primary = pre_collapse_score >= self._threshold and n >= self._min_fill
+        #
+        # Lagged condition: an allostatic-load spike (d_AL > _AL_SPIKE_THRESHOLD)
+        # was recorded within the last 300 ticks *and* plasticity_index is
+        # currently below its slow EMA (still falling).  This catches the
+        # temporally desynchronized pattern where d_AL fires early during the
+        # loading event but guardian dominance (and thus low pre_collapse_score)
+        # only emerges hundreds of ticks later.
+        _al_spiked = self._d_al_spike_count > 0
+        _plasticity_falling = (
+            self._plasticity_ema is not None
+            and plasticity_index < self._plasticity_ema
         )
+        _lagged = _al_spiked and _plasticity_falling and n >= self._min_fill
+        #
+        is_near_transition = _primary or _lagged
 
         return CollapseSnapshot(
             window=self._window,

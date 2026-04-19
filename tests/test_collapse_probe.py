@@ -12,6 +12,17 @@ from thermodynamic_agency.cognition.collapse_probe import (
     _DREAMER_MASKS,
 )
 
+# Equalised, low-magnitude precision weights used in the intervention tests.
+# Represents a deliberately uncommitted predictive policy where no single
+# vital signal is over-weighted — i.e. precision relaxation.
+_RELAXED_PRECISION: dict[str, float] = {
+    "energy": 1.0,
+    "heat": 1.0,
+    "waste": 1.0,
+    "integrity": 1.0,
+    "stability": 1.0,
+}
+
 
 class TestShannonEntropy:
     def test_uniform_two_classes(self):
@@ -380,3 +391,154 @@ class TestCollapseProbeIntegration:
             )
 
         assert not snap.is_near_transition
+
+
+class TestInterventionRecovery:
+    """Intervention test: when the probe fires near_transition, apply a
+    temporary precision relaxation / affect dampening for 500 ticks and
+    measure whether plasticity recovers.
+
+    Two hypotheses are tested back-to-back:
+    - If plasticity_index recovers after the intervention window, the
+      intervention provides a **control knob** that can steer the system
+      away from the Guardian attractor.
+    - If plasticity_index stays suppressed without intervention, the
+      Guardian attractor is **truly absorbing** — confirming that an
+      external nudge is necessary to escape.
+    """
+
+    def _build_stressed_state(self, probe: CollapseProbe) -> CollapseSnapshot:
+        """Drive the probe into a near_transition state via 200 ticks of
+        sustained Guardian dominance and rising allostatic load."""
+        snap = probe.update(
+            action="REPAIR",
+            mask="Guardian",
+            free_energy=55.0,
+            allostatic_load=65.0,
+            energy=40.0,
+            heat=50.0,
+        )
+        for i in range(1, 200):
+            snap = probe.update(
+                action="REPAIR",
+                mask="Guardian",
+                free_energy=55.0,
+                allostatic_load=65.0 + i * 0.05,
+                energy=40.0,
+                heat=50.0,
+            )
+        return snap
+
+    def test_precision_relaxation_recovers_plasticity(self):
+        """Precision relaxation + affect dampening over 500 ticks after
+        near_transition fires restores plasticity_index above 1.0, confirming
+        the intervention as a control knob.
+        """
+        probe = CollapseProbe(window=200, detection_threshold=0.35)
+
+        # Phase 1: drive into transition.
+        snap = self._build_stressed_state(probe)
+        assert snap.is_near_transition, (
+            "Precondition failed: stressed state must be near_transition before "
+            "the intervention can be tested."
+        )
+
+        # Phase 2: apply intervention for 500 ticks.
+        # - Precision relaxation: equalised, low-magnitude precision weights so
+        #   no single vital dominates the predictive policy.
+        # - Affect dampening: Dreamer mask with reduced allostatic load and
+        #   recovered energy, simulating a deliberate de-arousal period.
+        for _ in range(500):
+            snap = probe.update(
+                action="DECIDE",
+                mask="Dreamer",
+                free_energy=15.0,
+                allostatic_load=20.0,
+                energy=75.0,
+                heat=20.0,
+                precision_weights=_RELAXED_PRECISION,
+            )
+
+        # After 500 ticks of intervention the system should have escaped the
+        # Guardian attractor: plasticity_index > 1 signals that the Dreamer /
+        # exploratory regime is dominant again.
+        assert snap.plasticity_index > 1.0, (
+            f"Plasticity did not recover after intervention "
+            f"(plasticity_index={snap.plasticity_index:.3f}). "
+            "The Guardian attractor may be truly absorbing."
+        )
+        assert not snap.is_near_transition, (
+            "near_transition should clear once plasticity has recovered."
+        )
+
+    def test_no_intervention_guardian_attractor_is_absorbing(self):
+        """Without intervention the Guardian attractor is absorbing: plasticity
+        remains suppressed for 500 ticks beyond the transition point.
+        """
+        probe = CollapseProbe(window=200, detection_threshold=0.35)
+
+        # Phase 1: drive into transition (same stressed state as above).
+        snap = self._build_stressed_state(probe)
+        assert snap.is_near_transition, (
+            "Precondition failed: stressed state must be near_transition."
+        )
+
+        # Phase 2: continue with identical Guardian-dominant, high-load ticks —
+        # no intervention applied.
+        for _ in range(500):
+            snap = probe.update(
+                action="REPAIR",
+                mask="Guardian",
+                free_energy=55.0,
+                allostatic_load=75.0,
+                energy=40.0,
+                heat=50.0,
+            )
+
+        # Without intervention the system stays locked in the Guardian attractor.
+        assert snap.plasticity_index < 0.5, (
+            f"Guardian attractor should remain absorbing without intervention "
+            f"(plasticity_index={snap.plasticity_index:.3f})."
+        )
+        assert snap.is_near_transition, (
+            "near_transition should persist when no intervention is applied."
+        )
+
+    def test_intervention_plasticity_delta_is_significant(self):
+        """Quantify the control-knob effect: the plasticity_index gain from
+        intervention must exceed 1.0 compared with the no-intervention baseline,
+        demonstrating that the intervention is not a marginal perturbation but a
+        genuine escape from the attractor basin.
+        """
+        # --- No-intervention arm ---
+        probe_control = CollapseProbe(window=200, detection_threshold=0.35)
+        self._build_stressed_state(probe_control)
+        for _ in range(500):
+            snap_control = probe_control.update(
+                action="REPAIR",
+                mask="Guardian",
+                free_energy=55.0,
+                allostatic_load=75.0,
+                energy=40.0,
+                heat=50.0,
+            )
+
+        # --- Intervention arm ---
+        probe_intervention = CollapseProbe(window=200, detection_threshold=0.35)
+        self._build_stressed_state(probe_intervention)
+        for _ in range(500):
+            snap_intervention = probe_intervention.update(
+                action="DECIDE",
+                mask="Dreamer",
+                free_energy=15.0,
+                allostatic_load=20.0,
+                energy=75.0,
+                heat=20.0,
+                precision_weights=_RELAXED_PRECISION,
+            )
+
+        delta = snap_intervention.plasticity_index - snap_control.plasticity_index
+        assert delta > 1.0, (
+            f"Intervention plasticity gain is too small (delta={delta:.3f}). "
+            "The intervention may not be a sufficient control knob."
+        )

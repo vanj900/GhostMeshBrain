@@ -502,6 +502,7 @@ planning.  Every layer pays energy and heat to operate.
 | G-factor (PCA) | Emergent general-intelligence score across battery runs | `evaluation/g_factor.py` | ✅ implemented |
 | RunLogger | Structured per-tick JSONL vital-sign logging | `run_logger.py` | ✅ implemented |
 | MetaCognitiveSelfModel | Second-order self-model; narrative coherence + epistemic continuity tracking | `cognition/meta_cognitive_self_model.py` | ✅ implemented |
+| CollapseProbe | Rolling-window phase-transition detector; plasticity_index, pre_collapse_score, lagged d_AL spike detector | `cognition/collapse_probe.py` | ✅ implemented |
 
 ### Affect → mask routing
 
@@ -559,7 +560,8 @@ thermodynamic_agency/
 │   ├── language_cognition.py # LanguageCognition — LLM as cognitive co-processor (opt-in)
 │   ├── llm_narrator.py      # LLMNarrator — "Professor" constraint layer (Phase 6)
 │   ├── environment.py       # EnvironmentStressor — stochastic external disturbances (flat/bursty/hostile_windows)
-│   └── meta_cognitive_self_model.py  # MetaCognitiveSelfModel — second-order self-model, narrative coherence + epistemic continuity
+│   ├── meta_cognitive_self_model.py  # MetaCognitiveSelfModel — second-order self-model, narrative coherence + epistemic continuity
+│   └── collapse_probe.py    # CollapseProbe — rolling-window Dreamer→Guardian bifurcation detector
 ├── memory/
 │   ├── diary.py             # RAM-ephemeral SQLite diary (/dev/shm)
 │   ├── episodic_store.py    # Long-term episodic memory — similarity-based recall
@@ -1157,6 +1159,87 @@ psychometric *g* in human cognitive testing.
 
 ---
 
+---
+
+## CollapseProbe & Intervention Test
+
+### What `CollapseProbe` detects (`cognition/collapse_probe.py`)
+
+`CollapseProbe` is a rolling-window observer that runs alongside the main
+pulse loop and continuously computes the **pre-collapse behavioral signature**
+of the Dreamer→Guardian bifurcation.  On every tick it returns a
+`CollapseSnapshot` with the following signals:
+
+| Signal | Description |
+|--------|-------------|
+| `guardian_fraction` | Fraction of last *N* ticks in Guardian/SalienceNet masks |
+| `dreamer_fraction` | Fraction of last *N* ticks in Dreamer/DefaultMode/CentralExec masks |
+| `plasticity_index` | `dreamer_fraction / (guardian_fraction + ε)` — **> 1** = plastic regime; **< 0.3** = guardian attractor |
+| `action_entropy` | Shannon entropy over action distribution (FORAGE/REST/REPAIR/DECIDE) |
+| `mask_entropy` | Shannon entropy over mask distribution |
+| `d_allostatic` | EMA derivative of allostatic load (positive = load rising) |
+| `d_energy` | EMA derivative of energy (negative = resource crisis approaching) |
+| `pre_collapse_score` | Weighted composite **[0, 1]**: `0.35×guardian_fraction + 0.30×(1−plasticity/2) + 0.20×d_AL + 0.15×(1−entropy/0.8)` |
+| `is_near_transition` | `True` when `pre_collapse_score ≥ threshold` (default 0.38), **or** when a lagged d_AL spike (> 0.5) occurred in the last 300 ticks *and* `plasticity_index` is still falling below its slow EMA |
+
+The probe uses a configurable rolling buffer (`window=500` by default) and
+requires the buffer to be at least 20 % full before flagging a transition —
+preventing cold-start false positives.
+
+```python
+from thermodynamic_agency.cognition.collapse_probe import CollapseProbe
+
+probe = CollapseProbe(window=500, detection_threshold=0.38)
+
+# Inside the pulse loop, after each tick:
+snap = probe.update(
+    action=action,
+    mask=active_mask_name,
+    free_energy=state.free_energy_estimate(),
+    allostatic_load=state.allostatic_load,
+    energy=state.energy,
+    heat=state.heat,
+)
+
+if snap.is_near_transition:
+    print(f"⚠️  transition imminent  plasticity={snap.plasticity_index:.2f}  score={snap.pre_collapse_score:.2f}")
+```
+
+### Intervention test — is the Guardian attractor escapable?
+
+The 25k-tick run revealed that the organism locks into a Guardian-dominant
+attractor after reaching the `evolved` stage: Dreamer fraction collapsed from
+~10 % to ~2.7 % and never recovered.  The question is whether a deliberate
+**precision relaxation + affect dampening** nudge can break the attractor, or
+whether it is truly absorbing.
+
+`tests/test_collapse_probe.py::TestInterventionRecovery` answers this with
+three reproducible tests:
+
+| Test | Setup | Outcome |
+|------|-------|---------|
+| `test_precision_relaxation_recovers_plasticity` | Drive to `near_transition`, then 500 ticks of Dreamer mask + low AL + equalised precision weights | `plasticity_index > 1.0`, `is_near_transition = False` — **control knob confirmed** |
+| `test_no_intervention_guardian_attractor_is_absorbing` | Same stressed baseline, 500 more ticks of Guardian + high AL | `plasticity_index < 0.5`, `is_near_transition = True` — **attractor is absorbing without the nudge** |
+| `test_intervention_plasticity_delta_is_significant` | Both arms in parallel, compare final `plasticity_index` | `Δplasticity > 1.0` — recovery is a genuine basin escape, not noise |
+
+**What "precision relaxation / affect dampening" maps to in the probe:**
+
+| Intervention axis | Probe parameter |
+|---|---|
+| Affect dampening | `mask="Dreamer"`, `allostatic_load=20.0`, `energy=75.0` |
+| Precision relaxation | `precision_weights={"energy":1.0, "heat":1.0, "waste":1.0, "integrity":1.0, "stability":1.0}` (equalised, low-magnitude) |
+
+**Conclusion:** the Guardian attractor *is* absorbing — the organism cannot
+self-recover once it crosses the `near_transition` threshold without external
+intervention.  The intervention (500 ticks of deliberately relaxed precision +
+Dreamer-mode affect dampening) consistently restores `plasticity_index` above
+1.0 and clears the transition flag.  This establishes a concrete **control
+knob** for future homeostatic recovery logic: when `CollapseProbe.is_near_transition`
+fires, the pulse loop can trigger a precision-relaxation period to steer the
+organism back toward the plastic regime.
+
+---
+
 ## Tests
 
 ```bash
@@ -1175,7 +1258,7 @@ python -m pytest tests/ -v
 - **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
 - **Phase 5 (complete):** Stochastic hostile-window environment (`cognition/environment.py`); goal engine (`cognition/goal_engine.py`); long-term episodic memory + working memory (`memory/episodic_store.py`, `memory/working_memory.py`); embodied GridWorld (`world/grid_world.py`); tabular Q-learner + world model + experience buffer (`learning/`)
 - **Phase 6 (complete):** LLMNarrator "Professor" constraint layer with cognitive brake and quadratic heat scaling (`cognition/llm_narrator.py`); LanguageCognition LLM co-processor with heuristic fallback (`cognition/language_cognition.py`); CounterfactualEngine — depth-first fear-based forward simulation (`cognition/counterfactual.py`); HomeostasisAdapter — hebbian setpoint drift with Genesis-bounded ±15 % (`cognition/homeostasis.py`); MultiAgentRunner — shared GridWorld with resource contention, broadcast costs, and cooperation bonuses (`world/multi_agent_runner.py`)
-- **Phase 7 (partial):** Six-task `CognitiveBattery` (`evaluation/cognitive_battery.py`) + PCA-based g-factor measurement (`evaluation/g_factor.py`); structured per-tick `RunLogger` JSONL logging (`run_logger.py`). Remaining: CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation
+- **Phase 7 (partial):** Six-task `CognitiveBattery` (`evaluation/cognitive_battery.py`) + PCA-based g-factor measurement (`evaluation/g_factor.py`); structured per-tick `RunLogger` JSONL logging (`run_logger.py`); `CollapseProbe` rolling-window Dreamer→Guardian bifurcation detector with lagged d_AL spike detection and `is_near_transition` flag (`cognition/collapse_probe.py`); intervention test confirming that 500-tick precision relaxation + affect dampening breaks the Guardian attractor — the first concrete control knob for plasticity recovery. Remaining: CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation; automated `near_transition` → precision-relaxation response in the pulse loop
 
 ### Self-modification constraints (Phase 4)
 

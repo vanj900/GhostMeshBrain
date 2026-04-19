@@ -32,7 +32,9 @@ computes, on every ``update()`` call:
                        action_entropy.  Rises toward 1 in the pre-collapse
                        window.
 - **is_near_transition** ``True`` when pre_collapse_score exceeds the
-                       detection threshold (default 0.65).
+                       detection threshold (default 0.38), or when the lagged
+                       detector fires (d_AL spike within last 300 ticks *and*
+                       plasticity_index is still falling below its slow EMA).
 
 Usage
 -----
@@ -178,6 +180,7 @@ class CollapseProbe:
         self._d_heat: float = 0.0
         # Lagged-transition state
         self._d_al_history: deque[float] = deque(maxlen=300)
+        self._d_al_spike_count: int = 0   # O(1) count of values > _AL_SPIKE_THRESHOLD
         self._plasticity_ema: float | None = None
 
     # ------------------------------------------------------------------ #
@@ -245,8 +248,15 @@ class CollapseProbe:
         )
         self._buf.append(slot)
         self._update_derivatives(allostatic_load, energy, heat)
-        # Record this tick's d_allostatic in the lagged-spike history.
+        # Maintain the lagged-spike history and its O(1) spike counter.
+        # Before appending, check whether the oldest element (about to be
+        # evicted when the deque is full) was a spike so we can decrement.
+        if len(self._d_al_history) == self._d_al_history.maxlen:
+            if self._d_al_history[0] > _AL_SPIKE_THRESHOLD:
+                self._d_al_spike_count -= 1
         self._d_al_history.append(self._d_allostatic)
+        if self._d_allostatic > _AL_SPIKE_THRESHOLD:
+            self._d_al_spike_count += 1
         snap = self._compute_snapshot()
         # Update slow plasticity EMA *after* snapshot so _compute_snapshot()
         # compares the *current* plasticity against the previous-tick trend.
@@ -273,6 +283,7 @@ class CollapseProbe:
         self._d_energy = 0.0
         self._d_heat = 0.0
         self._d_al_history.clear()
+        self._d_al_spike_count = 0
         self._plasticity_ema = None
 
     # ------------------------------------------------------------------ #
@@ -379,10 +390,10 @@ class CollapseProbe:
         # Lagged condition: an allostatic-load spike (d_AL > _AL_SPIKE_THRESHOLD)
         # was recorded within the last 300 ticks *and* plasticity_index is
         # currently below its slow EMA (still falling).  This catches the
-        # temporally de-synchronised pattern where d_AL fires early during the
+        # temporally desynchronized pattern where d_AL fires early during the
         # loading event but guardian dominance (and thus low pre_collapse_score)
         # only emerges hundreds of ticks later.
-        _al_spiked = any(d > _AL_SPIKE_THRESHOLD for d in self._d_al_history)
+        _al_spiked = self._d_al_spike_count > 0
         _plasticity_falling = (
             self._plasticity_ema is not None
             and plasticity_index < self._plasticity_ema

@@ -686,6 +686,16 @@ GHOST_PULSE=5 ./scripts/ghostbrain.sh &
 | `GHOST_HUD` | `1` | Show HUD on each tick (`0` to disable) |
 | `GHOST_ENV_EVENTS` | `1` | Inject stochastic environmental shocks (`0` = flat world) |
 | `GHOST_VITALS_LOG` | `` | Path for per-tick JSONL vitals log (empty = disabled) |
+| `GHOST_LOG_FILE` | `` | Alias for `GHOST_VITALS_LOG` used by `RunLogger` (empty = disabled) |
+| `GHOST_STRESSOR_PROB` | `0.0` | Per-tick probability that `EnvironmentStressor` fires an event |
+| `GHOST_STRESSOR_INTENSITY` | `1.0` | Scale factor applied to all stressor magnitudes |
+| `GHOST_STRESSOR_MODE` | `flat` | Stressor firing pattern: `flat`, `bursty`, or `hostile_windows` |
+| `GHOST_STRESSOR_SEED` | `` | RNG seed for `EnvironmentStressor` reproducibility (empty = random) |
+| `GHOST_USE_LLM` | `0` | Enable `LanguageCognition` LLM co-processor (`1` to enable; ignored if `GHOST_PURITY_MODE=1`) |
+| `GHOST_PURITY_MODE` | `0` | Disable all LLM features unconditionally — `GHOST_USE_LLM=1` is treated as a bypass attempt and ignored |
+| `GHOST_FORCE_COLOR` | `0` | Force ANSI colour in the HUD even when stdout is not a TTY (`1` to force) |
+| `BROADCAST_E_COST` | `3.0` | Energy charged to the sender per `BROADCAST` action in multi-agent runs |
+| `BROADCAST_H_COST` | `2.0` | Heat charged to the sender per `BROADCAST` action in multi-agent runs |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint for LLM features |
 | `OLLAMA_MODEL` | `mistral` | LLM model for Janitor summarisation |
 
@@ -919,8 +929,8 @@ survival regulation and world interaction cleanly separated.
 
 ### GridWorld
 
-`world/grid_world.py` is a 10×10 partially-observable grid.  The agent sees
-a 5×5 neighbourhood (radius 2) and navigates with six actions:
+`world/grid_world.py` is a 10×10 (or larger) partially-observable grid.  The
+agent sees a 5×5 neighbourhood (radius 2) and navigates with six core actions:
 
 | Action | Effect |
 |--------|--------|
@@ -928,16 +938,34 @@ a 5×5 neighbourhood (radius 2) and navigates with six actions:
 | `GATHER` | Collect the resource on the current cell |
 | `WAIT` | Stay in place (costs nothing) |
 
-Cell types and their metabolic effects on `GATHER` (or passive entry):
+Cell types, their entry effects (passive), and `GATHER` effects:
 
-| Cell | Effect |
-|------|--------|
-| `FOOD` | +15 energy (consumed; respawns after 20 ticks) |
-| `WATER` | −12 heat (consumed; respawns after 20 ticks) |
-| `MEDICINE` | +10 integrity (consumed; respawns after 25 ticks) |
-| `RADIATION` | +8 heat on entry (passive hazard) |
-| `TOXIN` | +10 waste on entry (passive hazard) |
-| `WALL` | Impassable |
+| Cell | Entry effect | GATHER effect | Respawn |
+|------|-------------|---------------|---------|
+| `FOOD` | — | +15 energy | 20 ticks |
+| `WATER` | — | −12 heat | 20 ticks |
+| `MEDICINE` | — | +10 integrity | 25 ticks |
+| `FOREST` | −3 energy (dense undergrowth) | +25 energy (rich forage) | 30 ticks |
+| `ROCKY` | +6 heat (exertion) | +10 integrity (mineral repair) | 35 ticks |
+| `RADIATION` | +8 heat (passive hazard) | — | — |
+| `TOXIN` | +10 waste (passive hazard) | — | — |
+| `WALL` | Impassable | — | — |
+
+### Seasons
+
+Seasons cycle every `season_length` ticks (default 50): **spring → summer →
+fall → winter**.  They affect forage yield and resource respawn rates:
+
+| Season | Forage-yield multiplier | Respawn-delay multiplier |
+|--------|------------------------|--------------------------|
+| `spring` | 1.0× | 1.0× |
+| `summer` | **2.0×** (burst) | 0.8× (fast growth) |
+| `fall` | 0.75× | 1.25× |
+| `winter` | 0.5× (drought) | **2.0×** (very slow) |
+
+Only energy-bearing cells (`FOOD`, `FOREST`) are affected by the forage-yield
+multiplier; heat and integrity effects are season-neutral.  Pass
+`season_length=0` to disable seasons entirely.
 
 ### Two-level architecture (EpisodeRunner)
 
@@ -1074,9 +1102,31 @@ GridWorld.  Key dynamics:
 | Feature | Mechanics |
 |---------|-----------|
 | **Resource contention** | First-come-first-served; the loser receives `contested=True` and a competition penalty in their reward |
-| **Broadcast communication** | Any agent can broadcast; costs the sender `BROADCAST_ENERGY_COST + BROADCAST_HEAT_COST`; silence is free |
+| **Broadcast communication** | Any agent can broadcast; costs the sender `BROADCAST_E_COST` energy + `BROADCAST_H_COST` heat (env-configurable); silence is free |
+| **Signal** | Cheap nearby-only broadcast (radius 2): −1 energy, +1 heat; only reaches agents in the 5×5 window |
+| **Cooperate** | Share energy with all nearby visible agents: costs sender −5 energy; each receiver gains +3 energy; raises actor reputation by 0.1 |
+| **Betray** | Steal from the nearest visible agent: actor gains +8 energy; victim loses −4 energy; lowers actor reputation by 0.2 |
+| **Observe other** | Watch a nearby agent: −2 energy, +1 heat; grants a Q-table boost by sampling the observed agent's last action |
 | **Social stress** | Crowded 5×5 vision windows raise `social_stress` (0–1); logged as a diary stressor |
 | **Lifeboat scenario** | Pass `respawn=False` to disable resource regeneration and test which ethics profile survives exhaustion |
+
+#### Reputation System
+
+A shared `ReputationSystem` tracks each agent's trust score in **[0, 1]**
+(default 0.5).  COOPERATE raises a score by 0.1; BETRAY lowers it by 0.2.
+Scores are precision-weighted — a highly-reputed agent's COOPERATE signal is
+worth more to nearby agents.  Final reputation is available on `AgentResult.final_reputation`.
+
+#### WorldEventSystem
+
+`WorldEventSystem` fires global stochastic events that hit all agents
+simultaneously, forcing coordinated adaptation:
+
+| Event | Effect | Default probability |
+|-------|--------|---------------------|
+| `storm` | Spikes heat and waste for every exposed agent | 2 % per tick |
+| `drought` | Doubles resource respawn delay for the event window | 1 % per tick |
+| `predator` | Adds a normalised `predator_threat` [0, 1] to each observation; triggers amygdala / SalienceNet | 1.5 % per tick |
 
 ```python
 from thermodynamic_agency.world.multi_agent_runner import MultiAgentRunner
@@ -1084,7 +1134,11 @@ from thermodynamic_agency.world.multi_agent_runner import MultiAgentRunner
 runner = MultiAgentRunner(n_agents=3, seed=42, respawn=False)
 results = runner.run(max_ticks=200)
 for i, res in enumerate(results):
-    print(f"Agent {i}: survived={res['survived']} ticks={res['ticks']}")
+    print(
+        f"Agent {i}: survived={res.survived}  ticks={res.ticks_alive}"
+        f"  reputation={res.final_reputation:.2f}"
+        f"  cooperations={res.cooperations}  betrayals={res.betrayals}"
+    )
 ```
 
 ---
@@ -1258,7 +1312,7 @@ python -m pytest tests/ -v
 - **Phase 4 (complete):** Constrained self-modification at `evolved` stage with full audit trail (`cognition/self_mod_engine.py`); Genesis Doctrine integrity lock (`cognition/genesis_reader.py`); 33-test phase-4 suite
 - **Phase 5 (complete):** Stochastic hostile-window environment (`cognition/environment.py`); goal engine (`cognition/goal_engine.py`); long-term episodic memory + working memory (`memory/episodic_store.py`, `memory/working_memory.py`); embodied GridWorld (`world/grid_world.py`); tabular Q-learner + world model + experience buffer (`learning/`)
 - **Phase 6 (complete):** LLMNarrator "Professor" constraint layer with cognitive brake and quadratic heat scaling (`cognition/llm_narrator.py`); LanguageCognition LLM co-processor with heuristic fallback (`cognition/language_cognition.py`); CounterfactualEngine — depth-first fear-based forward simulation (`cognition/counterfactual.py`); HomeostasisAdapter — hebbian setpoint drift with Genesis-bounded ±15 % (`cognition/homeostasis.py`); MultiAgentRunner — shared GridWorld with resource contention, broadcast costs, and cooperation bonuses (`world/multi_agent_runner.py`)
-- **Phase 7 (partial):** Six-task `CognitiveBattery` (`evaluation/cognitive_battery.py`) + PCA-based g-factor measurement (`evaluation/g_factor.py`); structured per-tick `RunLogger` JSONL logging (`run_logger.py`); `CollapseProbe` rolling-window Dreamer→Guardian bifurcation detector with lagged d_AL spike detection and `is_near_transition` flag (`cognition/collapse_probe.py`); intervention test confirming that 500-tick precision relaxation + affect dampening breaks the Guardian attractor — the first concrete control knob for plasticity recovery. Remaining: CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation; automated `near_transition` → precision-relaxation response in the pulse loop
+- **Phase 7 (partial):** Six-task `CognitiveBattery` (`evaluation/cognitive_battery.py`) + PCA-based g-factor measurement (`evaluation/g_factor.py`); structured per-tick `RunLogger` JSONL logging (`run_logger.py`); `CollapseProbe` rolling-window Dreamer→Guardian bifurcation detector with lagged d_AL spike detection and `is_near_transition` flag (`cognition/collapse_probe.py`); intervention test confirming that 500-tick precision relaxation + affect dampening breaks the Guardian attractor — the first concrete control knob for plasticity recovery; autonomic intervention loop (`_apply_autonomic_intervention()` in `pulse.py`) — CollapseProbe now automatically triggers precision relaxation + Dreamer mask on the tick following a `near_transition` detection, closing the feedback loop without external nudging. Remaining: CI/CD pipeline; persistent cross-session memory; richer LLM-driven goal narration; distributed multi-agent federation
 
 ### Self-modification constraints (Phase 4)
 

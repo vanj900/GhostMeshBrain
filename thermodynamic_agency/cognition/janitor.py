@@ -23,8 +23,8 @@ from thermodynamic_agency.core.metabolic import MetabolicState
 from thermodynamic_agency.memory.diary import RamDiary, DiaryEntry
 
 # Metabolic rewards for a Janitor pass
-JANITOR_WASTE_REDUCTION: float = float(os.environ.get("JANITOR_WASTE_DELTA", "-35"))
-JANITOR_HEAT_REDUCTION: float = float(os.environ.get("JANITOR_HEAT_DELTA", "-28"))
+JANITOR_WASTE_REDUCTION: float = float(os.environ.get("JANITOR_WASTE_DELTA", "-45"))
+JANITOR_HEAT_REDUCTION: float = float(os.environ.get("JANITOR_HEAT_DELTA", "-35"))
 JANITOR_ENERGY_COST: float = float(os.environ.get("JANITOR_ENERGY_COST", "4"))
 
 OLLAMA_URL: str = os.environ.get("OLLAMA_URL", "http://localhost:11434")

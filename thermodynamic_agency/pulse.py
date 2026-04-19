@@ -300,8 +300,16 @@ class GhostMesh:
         if self.world is not None and self.learner is not None:
             self._world_step()
 
+        # Adaptive load throttling: reduce compute burden when heat is elevated,
+        # mimicking thermal-throttling in physical CPUs.  Each degree above 70
+        # shaves 1.3% off the effective load, bottoming at 50% of nominal.
+        _effective_load = self._compute_load
+        if self.state.heat > 70.0:
+            _heat_excess = min(1.0, (self.state.heat - 70.0) / 30.0)
+            _effective_load = max(0.5 * self._compute_load,
+                                  self._compute_load * (1.0 - 0.4 * _heat_excess))
 
-        action = self.state.tick(compute_load=self._compute_load)
+        action = self.state.tick(compute_load=_effective_load)
         self.rotator.tick(self.state.entropy)
 
         # Update HomeostasisAdapter with just-observed vitals.

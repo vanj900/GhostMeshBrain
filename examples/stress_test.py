@@ -57,8 +57,15 @@ def _run_session(
     no_hud: bool,
     stressor_prob: float = 0.0,
     stressor_mode: str = "flat",
+    respawn: bool = True,
 ) -> dict:
-    """Run one simulation session and return a summary dict."""
+    """Run one simulation session and return a summary dict.
+
+    When *respawn* is True the organism is automatically restarted after each
+    death until the cumulative tick target is reached.  All lives append to the
+    same JSONL log so the full trajectory is preserved.  The summary includes
+    ``deaths`` and ``lives`` counters for post-mortem analysis.
+    """
     import os
 
     os.environ["GHOST_COMPUTE_LOAD"] = str(compute_load)
@@ -74,12 +81,37 @@ def _run_session(
 
     from thermodynamic_agency.pulse import GhostMesh
 
-    mesh = GhostMesh(seed=seed)
     t0 = time.perf_counter()
-    mesh.run(max_ticks=ticks)
+    accumulated = 0
+    deaths = 0
+    lives = 0
+    mesh = None
+
+    while accumulated < ticks:
+        remaining = ticks - accumulated
+        lives += 1
+        # Wipe per-life state/diary so each life starts fresh (no resurrection shock
+        # stacking); the JSONL log is NOT deleted so all lives contribute to it.
+        for p in [state_file, diary_path]:
+            if os.path.exists(p):
+                os.remove(p)
+        life_seed = (seed * 31 + lives) if seed is not None else None
+        mesh = GhostMesh(seed=life_seed)
+        mesh.run(max_ticks=remaining)
+
+        life_ticks = len(mesh.run_logger.records)
+        accumulated += life_ticks
+
+        if life_ticks < remaining:
+            # Organism died before reaching the tick target
+            deaths += 1
+
+        if not respawn:
+            break
+
     elapsed = time.perf_counter() - t0
 
-    # Parse log to produce summary stats
+    # Parse log to produce summary stats (all lives are in the same file)
     records = []
     if os.path.exists(log_path):
         with open(log_path) as fh:
@@ -88,7 +120,10 @@ def _run_session(
                 if line:
                     records.append(json.loads(line))
 
+    assert mesh is not None
     summary = _summarise(records, compute_load, elapsed, mesh.state)
+    summary["deaths"] = deaths
+    summary["lives"] = lives
     return summary
 
 
@@ -178,9 +213,13 @@ def _print_summary(summary: dict, label: str) -> None:
     if "error" in summary:
         print(f"  ERROR: {summary['error']}")
         return
+    lives = summary.get("lives", 1)
+    deaths = summary.get("deaths", 0)
+    survived = deaths == 0
     print(f"  Ticks          : {summary['ticks']} ({summary['ticks_per_sec']} ticks/s)")
     print(f"  Compute load   : {summary['compute_load']}")
-    print(f"  Survived       : {summary['survived']}")
+    print(f"  Lives / Deaths : {lives} / {deaths}  "
+          f"({'survived' if survived else 'died ' + str(deaths) + 'x'})")
     print(f"  Final stage    : {summary['final_stage']}")
     print(f"  Final health   : {summary['final_health']}")
     print(f"  Near-death tks : {summary['near_death_ticks']}")
@@ -289,6 +328,18 @@ def main() -> None:
         "--stressor-prob", type=float, default=0.0,
         help="Stressor probability per tick (0 = disabled, 0.05 = 5%% chance/tick)",
     )
+    respawn_group = parser.add_mutually_exclusive_group()
+    respawn_group.add_argument(
+        "--respawn", dest="respawn", action="store_true", default=True,
+        help=(
+            "Auto-restart organism on death until tick target is reached "
+            "(default: enabled). Tracks deaths and lives in the summary."
+        ),
+    )
+    respawn_group.add_argument(
+        "--no-respawn", dest="respawn", action="store_false",
+        help="Stop at first death instead of restarting (single-life mode).",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -307,14 +358,15 @@ def main() -> None:
         state_file = str(out_dir / f"state_{label}.json")
         diary_path = str(out_dir / f"diary_{label}.db")
 
-        # Clean up any previous run artifacts
+        # Clean up previous run artifacts (log is wiped once per session; lives append to it)
         for p in [log_path, state_file, diary_path]:
             if os.path.exists(p):
                 os.remove(p)
 
         print(f"\n[stress_test] Starting session '{label}' — {args.ticks} ticks, "
               f"compute_load={cl}, env_events={not args.no_env_events}, "
-              f"mode={args.mode}, stressor_prob={args.stressor_prob}")
+              f"mode={args.mode}, stressor_prob={args.stressor_prob}, "
+              f"respawn={args.respawn}")
 
         summary = _run_session(
             ticks=args.ticks,
@@ -327,6 +379,7 @@ def main() -> None:
             no_hud=args.no_hud,
             stressor_prob=args.stressor_prob,
             stressor_mode=args.mode,
+            respawn=args.respawn,
         )
         summary["label"] = label
         summary["log_path"] = log_path

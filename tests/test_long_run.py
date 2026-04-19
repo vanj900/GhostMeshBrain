@@ -130,7 +130,7 @@ class TestMetaCognitiveSelfModelEvolution:
             meta.update(state, base_affect=0.9 if i % 2 == 0 else -0.9, diary_snapshot="tick")
         assert len(meta.surprise_events) > 0, "Expected at least one surprise event"
         for ev in meta.surprise_events:
-            assert "tick" in ev
+            assert "entropy" in ev
             assert "affect_swing" in ev
             assert "meta_intensity" in ev
 
@@ -327,9 +327,11 @@ class TestLongRunSurvival:
 
         # If the agent had at least some DECIDE ticks, there should be surprises.
         if len(mesh.meta_self.narrative_trace) > 0:
-            assert len(mesh.meta_self.surprise_events) >= 0  # always true; document intent
             # With a 0.5 stressor over many ticks, affect oscillates; expect surprises.
-            assert mesh.meta_self.interiority_score() >= 0.0
+            assert len(mesh.meta_self.surprise_events) >= 1, (
+                "Expected at least one surprise event after 100 ticks under high stressor"
+            )
+            assert mesh.meta_self.interiority_score() > 0.0
         else:
             # Agent never reached DECIDE — it was under constant crisis.
             # This is still a valid outcome; verify it survived some ticks.

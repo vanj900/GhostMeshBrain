@@ -93,6 +93,12 @@ _MOVEMENT_DELTA: dict[str, tuple[int, int]] = {
     WorldAction.WEST.value: (-1, 0),
 }
 
+# world_pressure constants
+# At ~12.5% resource coverage (1/8 of interior cells) scarcity saturates to 1.
+_SCARCITY_SCALING_FACTOR: float = 8.0
+# Normalises the resource_decay_rate × world_tick product into [0, 1] range.
+_DECAY_PRESSURE_SCALING: float = 0.1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data classes
@@ -201,6 +207,7 @@ class GridWorld:
         ``actual_delay = base_delay × (1 + resource_decay_rate × world_tick)``.
         This makes the world progressively more hostile over a long run,
         rewarding anticipatory resource management.  Default 0.0 (no decay).
+        Negative values are silently clamped to 0.0.
     """
 
     def __init__(
@@ -389,9 +396,9 @@ class GridWorld:
         # Scarcity fraction: 0 when well-resourced, approaches 1 when empty.
         # Scale so that ~12.5% resource coverage maps to maximum scarcity.
         resource_fraction = resources / total_interior
-        scarcity = max(0.0, min(1.0, 1.0 - resource_fraction * 8.0))
+        scarcity = max(0.0, min(1.0, 1.0 - resource_fraction * _SCARCITY_SCALING_FACTOR))
         # Decay pressure grows with resource_decay_rate × elapsed world ticks.
-        decay_pressure = min(1.0, self.resource_decay_rate * self._world_tick * 0.1)
+        decay_pressure = min(1.0, self.resource_decay_rate * self._world_tick * _DECAY_PRESSURE_SCALING)
         return min(1.0, (scarcity + decay_pressure) / 2.0)
 
     # ── Grid generation ───────────────────────────────────────────────────────

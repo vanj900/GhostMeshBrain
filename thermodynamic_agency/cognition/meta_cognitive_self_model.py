@@ -157,7 +157,7 @@ class MetaCognitiveSelfModel:
             or meta_intensity > SURPRISE_META_INTENSITY_THRESHOLD
         ):
             self.surprise_events.append({
-                "tick": float(self.core_self.entropy),
+                "entropy": float(self.core_self.entropy),
                 "affect_swing": affect_swing,
                 "meta_intensity": meta_intensity,
                 "base_affect": base_affect,
@@ -216,6 +216,7 @@ class MetaCognitiveSelfModel:
         """
         if not self.surprise_events:
             return 0.0
+        # MetabolicState.entropy is the monotonic tick counter (organism age).
         elapsed = max(1, self.core_self.entropy)
         # Expect roughly one notable surprise per 10 ticks as a baseline maximum.
         expected_max = max(10, elapsed // 10)

@@ -93,6 +93,12 @@ _MOVEMENT_DELTA: dict[str, tuple[int, int]] = {
     WorldAction.WEST.value: (-1, 0),
 }
 
+# world_pressure constants
+# At ~12.5% resource coverage (1/8 of interior cells) scarcity saturates to 1.
+_SCARCITY_SCALING_FACTOR: float = 8.0
+# Normalises the resource_decay_rate × world_tick product into [0, 1] range.
+_DECAY_PRESSURE_SCALING: float = 0.1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data classes
@@ -196,6 +202,12 @@ class GridWorld:
     allow_respawn:
         Whether consumed resources respawn after their timer expires.  Set to
         ``False`` to disable respawning entirely (e.g., "Lifeboat Scenario").
+    resource_decay_rate:
+        When > 0, respawn delays grow linearly with ``world_tick``:
+        ``actual_delay = base_delay × (1 + resource_decay_rate × world_tick)``.
+        This makes the world progressively more hostile over a long run,
+        rewarding anticipatory resource management.  Default 0.0 (no decay).
+        Negative values are silently clamped to 0.0.
     """
 
     def __init__(
@@ -206,6 +218,7 @@ class GridWorld:
         wall_density: float = 0.05,
         vision_radius: int = 2,
         allow_respawn: bool = True,
+        resource_decay_rate: float = 0.0,
     ) -> None:
         self.width = width
         self.height = height
@@ -219,6 +232,7 @@ class GridWorld:
         self._episode: int = 0
         self._respawn_timers: list[_RespawnTimer] = []
         self.allow_respawn: bool = allow_respawn
+        self.resource_decay_rate: float = max(0.0, resource_decay_rate)
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -266,11 +280,16 @@ class GridWorld:
                 x, y = self._agent_pos
                 self._grid[y][x] = CellType.EMPTY.value
                 if self.allow_respawn:
+                    base_delay = _RESPAWN_TICKS.get(cell, 20)
+                    # Resource decay: respawn takes longer as the world ages,
+                    # creating increasing survival pressure over long runs.
+                    decay_factor = 1.0 + self.resource_decay_rate * self._world_tick
+                    actual_delay = max(1, int(base_delay * decay_factor))
                     self._respawn_timers.append(
                         _RespawnTimer(
                             cell_type=cell,
                             position=self._agent_pos,
-                            ticks_remaining=_RESPAWN_TICKS.get(cell, 20),
+                            ticks_remaining=actual_delay,
                         )
                     )
                 gathered = True
@@ -356,6 +375,31 @@ class GridWorld:
                 if cell in _GATHERABLE:
                     counts[cell] = counts.get(cell, 0) + 1
         return counts
+
+    @property
+    def world_pressure(self) -> float:
+        """Normalised environmental pressure in [0, 1].
+
+        Combines current resource scarcity with the accumulated decay effect
+        to produce a single hostility score.  A freshly-initialised world
+        with full resources scores near 0; a depleted world with high
+        ``resource_decay_rate`` late in a long run scores near 1.
+
+        Use this to monitor whether the world is becoming "alive enough" in
+        the sense of creating genuine survival challenge.
+        """
+        total_interior = (self.width - 2) * (self.height - 2)
+        if total_interior <= 0:
+            return 0.0
+        counts = self.resource_count()
+        resources = sum(counts.values())
+        # Scarcity fraction: 0 when well-resourced, approaches 1 when empty.
+        # Scale so that ~12.5% resource coverage maps to maximum scarcity.
+        resource_fraction = resources / total_interior
+        scarcity = max(0.0, min(1.0, 1.0 - resource_fraction * _SCARCITY_SCALING_FACTOR))
+        # Decay pressure grows with resource_decay_rate × elapsed world ticks.
+        decay_pressure = min(1.0, self.resource_decay_rate * self._world_tick * _DECAY_PRESSURE_SCALING)
+        return min(1.0, (scarcity + decay_pressure) / 2.0)
 
     # ── Grid generation ───────────────────────────────────────────────────────
 

@@ -1,0 +1,55 @@
+[
+  {
+    "ticks": 10000,
+    "compute_load": 1.0,
+    "elapsed_s": 18.49,
+    "ticks_per_sec": 540.9,
+    "survived": true,
+    "final_stage": "aware",
+    "final_health": 59.3,
+    "final_energy": 23.5,
+    "final_heat": 64.8,
+    "final_integrity": 96.1,
+    "final_stability": 100.0,
+    "avg_energy": 43.0,
+    "avg_heat": 54.4,
+    "avg_waste": 11.5,
+    "avg_integrity": 97.7,
+    "avg_stability": 94.8,
+    "avg_affect": -0.159,
+    "avg_free_energy": 21.88,
+    "avg_allostatic_load": 71.63,
+    "max_decide_streak": 269,
+    "near_death_ticks": 26,
+    "preventive_maintenance_index": 1.0,
+    "action_distribution": {
+      "FORAGE": 1046,
+      "REST": 758,
+      "REPAIR": 4740,
+      "DECIDE": 3456
+    },
+    "event_distribution": {
+      "calm": 4531,
+      "energy_drain": 973,
+      "integrity_hit": 674,
+      "thermal_spike": 957,
+      "waste_flood": 810,
+      "energy_spike": 1222,
+      "crisis": 309,
+      "stability_quake": 524
+    },
+    "mask_distribution": {
+      "Guardian": 3639,
+      "CentralExec": 860,
+      "DefaultMode": 4518,
+      "Judge": 756,
+      "Healer": 189,
+      "Dreamer": 35,
+      "Courier": 3
+    },
+    "deaths": 7,
+    "lives": 8,
+    "label": "cl1.0",
+    "log_path": "/tmp/ghost_runs/vitals_cl1.0.jsonl"
+  }
+]

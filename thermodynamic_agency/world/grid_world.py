@@ -165,6 +165,12 @@ _MOVEMENT_DELTA: dict[str, tuple[int, int]] = {
     WorldAction.WEST.value: (-1, 0),
 }
 
+# Cell types whose GATHER delta_energy is scaled by season forage multiplier.
+# Only energy-bearing cells are affected; heat/integrity effects are season-neutral.
+_SEASON_AFFECTED_CELLS: frozenset[str] = frozenset(
+    {CellType.FOOD.value, CellType.FOREST.value}
+)
+
 # world_pressure constants
 # At ~12.5% resource coverage (1/8 of interior cells) scarcity saturates to 1.
 _SCARCITY_SCALING_FACTOR: float = 8.0
@@ -602,10 +608,11 @@ class GridWorld:
     ) -> dict[str, float]:
         """Return gather effects with season forage multiplier applied.
 
-        Only ``delta_energy`` on FOOD and FOREST cells is scaled; other effects
-        (heat reduction on WATER, integrity on MEDICINE/ROCKY) are season-neutral.
+        Only ``delta_energy`` on cells in ``_SEASON_AFFECTED_CELLS`` is scaled;
+        other effects (heat reduction on WATER, integrity on MEDICINE/ROCKY) are
+        season-neutral.
         """
-        if cell not in (CellType.FOOD.value, CellType.FOREST.value):
+        if cell not in _SEASON_AFFECTED_CELLS:
             return dict(base_effects)
         mult = _SEASON_FORAGE_MULTIPLIER.get(self.current_season, 1.0)
         return {

@@ -120,6 +120,11 @@ SOCIAL_STRESS_THRESHOLD: float = 0.25
 # Starting personality masks per agent index (cycles for N > 5)
 _STARTING_MASKS: list[str] = ["Guardian", "Dreamer", "Courier", "Healer", "Judge"]
 
+# Precomputed set of relative offsets for the 5×5 SIGNAL vision radius (radius=2)
+_SIGNAL_VISION_OFFSETS: frozenset[tuple[int, int]] = frozenset(
+    (dx, dy) for dx in range(-2, 3) for dy in range(-2, 3)
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reputation System
@@ -330,6 +335,8 @@ class MultiAgentRunner:
 
             # Assign diverse starting personalities — prevents all agents from
             # converging to the same Guardian attractor from the first tick.
+            # force= bypasses the min_ticks guard on the very first rotation;
+            # at tick 0 the guard would block any change from the default mask.
             starting_mask = _STARTING_MASKS[i % len(_STARTING_MASKS)]
             mesh.rotator.maybe_rotate(
                 current_tick=0, force=starting_mask
@@ -456,15 +463,13 @@ class MultiAgentRunner:
             )
             agent.signals_sent += 1
             msg = f"signal:agent{agent.agent_id}@tick{tick}"
+            ax, ay = agent.pos
+            signal_zone = {(ax + dx, ay + dy) for dx, dy in _SIGNAL_VISION_OFFSETS}
             for other in self._agents:
                 if (
                     other.agent_id != agent.agent_id
                     and other.alive
-                    and other.pos in {
-                        (agent.pos[0] + dx, agent.pos[1] + dy)
-                        for dx in range(-2, 3)
-                        for dy in range(-2, 3)
-                    }
+                    and other.pos in signal_zone
                 ):
                     other.inbox.append(msg)
             vitals_after = agent.mesh.state.to_dict()
@@ -697,7 +702,7 @@ class MultiAgentRunner:
                 result.append(other)
         return result
 
-    def _nearest_agent(self, agent: _AgentState) -> "_AgentState | None":
+    def _nearest_agent(self, agent: _AgentState) -> _AgentState | None:
         """Return the nearest visible living agent, or None if none visible."""
         nearby = self._nearby_agents(agent)
         if not nearby:

@@ -225,6 +225,31 @@ class TestCollapseProbeBasic:
         snap = self._tick(probe, mask="Guardian")
         assert snap.ticks_in_window == 1
 
+    def test_reset_clears_lagged_state(self):
+        """reset() must clear _d_al_history and _plasticity_ema."""
+        probe = CollapseProbe(window=50, detection_threshold=0.38)
+        # Build up some lagged state via a spike
+        for _ in range(30):
+            probe.update(
+                action="DECIDE", mask="Dreamer",
+                free_energy=10.0, allostatic_load=10.0,
+                energy=85.0, heat=15.0,
+            )
+        probe.update(
+            action="DECIDE", mask="Dreamer",
+            free_energy=10.0, allostatic_load=300.0,
+            energy=85.0, heat=15.0,
+        )
+        probe.reset()
+        # After reset the lagged history is empty → _al_spiked is False
+        snap = probe.update(
+            action="DECIDE", mask="Dreamer",
+            free_energy=10.0, allostatic_load=10.0,
+            energy=85.0, heat=15.0,
+        )
+        assert snap.ticks_in_window == 1
+        assert not snap.is_near_transition
+
     def test_snapshot_window_field_matches_config(self):
         probe = CollapseProbe(window=42)
         snap = probe.update(
@@ -293,3 +318,65 @@ class TestCollapseProbeIntegration:
 
         # After full window of Dreamer, plasticity should be > 1
         assert snap.plasticity_index > 1.0
+
+    def test_lagged_transition_fires_after_al_spike_and_plasticity_collapse(self):
+        """Lagged detector: d_AL spike >0.5 within last 300 ticks + plasticity
+        still falling → is_near_transition fires even when pre_collapse_score
+        is below detection_threshold.
+        """
+        probe = CollapseProbe(window=200, detection_threshold=0.38)
+
+        # Phase 1: 80 ticks of healthy Dreamer regime — builds plasticity_ema high.
+        for _ in range(80):
+            probe.update(
+                action="DECIDE", mask="Dreamer",
+                free_energy=10.0, allostatic_load=10.0,
+                energy=85.0, heat=15.0,
+            )
+
+        # AL spike: single tick where AL jumps to 300 → d_allostatic >> 0.5.
+        probe.update(
+            action="DECIDE", mask="Dreamer",
+            free_energy=10.0, allostatic_load=300.0,
+            energy=85.0, heat=15.0,
+        )
+
+        # Phase 2: 80 ticks of 50/50 Guardian / DefaultMode with moderate AL.
+        # pre_collapse_score stays < 0.38 because guardian_fraction is only ~0.25
+        # and d_AL has settled; but plasticity_index falls below its EMA.
+        snap = None
+        for i in range(80):
+            snap = probe.update(
+                action="REST" if i % 2 == 0 else "DECIDE",
+                mask="Guardian" if i % 2 == 0 else "DefaultMode",
+                free_energy=20.0, allostatic_load=30.0,
+                energy=70.0, heat=20.0,
+            )
+
+        assert snap is not None
+        # Lagged condition should have fired; pre_collapse_score alone would not.
+        assert snap.is_near_transition
+
+    def test_lagged_transition_does_not_fire_without_al_spike(self):
+        """Without a preceding d_AL spike the lagged detector must stay silent."""
+        probe = CollapseProbe(window=200, detection_threshold=0.38)
+
+        # Phase 1: 80 ticks of Dreamer, low static AL (no spike, d_al ≈ 0).
+        for _ in range(80):
+            probe.update(
+                action="DECIDE", mask="Dreamer",
+                free_energy=10.0, allostatic_load=10.0,
+                energy=85.0, heat=15.0,
+            )
+
+        # Phase 2: 80 ticks of 50/50 Guardian/DefaultMode, same moderate AL
+        # (pre_collapse_score still < 0.38; _al_spiked = False).
+        for i in range(80):
+            snap = probe.update(
+                action="REST" if i % 2 == 0 else "DECIDE",
+                mask="Guardian" if i % 2 == 0 else "DefaultMode",
+                free_energy=20.0, allostatic_load=12.0,
+                energy=70.0, heat=20.0,
+            )
+
+        assert not snap.is_near_transition

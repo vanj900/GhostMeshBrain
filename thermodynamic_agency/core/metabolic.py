@@ -57,7 +57,11 @@ _AL_ALPHA_T: float = 0.015     # heat contribution rate
 _AL_ALPHA_W: float = 0.010     # waste contribution rate
 _AL_ALPHA_FE: float = 0.003    # free-energy contribution rate
 _AL_BETA_REPAIR: float = 0.12  # repair reduces allostatic load
-_AL_BETA_REST: float = 0.04    # rest reduces allostatic load
+_AL_BETA_REST: float = 0.08    # rest reduces allostatic load (doubled for better recovery)
+
+# Passive cooling — mild baseline heat dissipation every tick (applied after death checks).
+# Acts as thermal radiation; prevents long-run heat runaway without rescuing terminal spikes.
+_PASSIVE_COOL_RATE: float = 0.05
 
 # DECIDE streak fatigue constants (Phase 4)
 _DECIDE_STREAK_FREE: int = 10   # streak ticks before fatigue kicks in
@@ -160,7 +164,8 @@ class MetabolicState:
         self.energy -= compute_load * 0.12
         # Non-linear waste → heat cascade: high waste amplifies heat exponentially
         # (biological analogy: inflammation runaway above critical toxin threshold).
-        _waste_heat_factor = 1.0 + self.waste / 50.0
+        # Factor uses /60 (was /50) for a milder baseline waste-to-heat conversion.
+        _waste_heat_factor = 1.0 + self.waste / 60.0
         if self.waste > 60.0:
             _waste_heat_factor += ((self.waste - 60.0) / 40.0) ** 2
         self.heat += compute_load * 0.1 * _waste_heat_factor
@@ -272,6 +277,11 @@ class MetabolicState:
                 f"Entropic dissolution at tick {self.entropy}", snapshot
             )
 
+        # Mild passive cooling — baseline thermal radiation applied *after* death
+        # checks so it cannot rescue a terminal heat spike but does prevent slow
+        # runaway accumulation across long DECIDE streaks.
+        self.heat = max(0.0, self.heat - _PASSIVE_COOL_RATE * compute_load)
+
         # Autonomic priority ordering (most urgent first)
         if self.energy < FORAGE_ENERGY_THRESHOLD:
             return "FORAGE"
@@ -354,10 +364,11 @@ class MetabolicState:
 
         for _ in range(horizon):
             w = w + 0.018 + 0.02 * al_ratio
-            _wf = 1.0 + w / 50.0
+            _wf = 1.0 + w / 60.0
             if w > 60.0:
                 _wf += ((w - 60.0) / 40.0) ** 2
-            h = h + 0.1 * _wf + 0.08 * al_ratio
+            h = h + 0.1 * _wf + 0.08 * al_ratio - _PASSIVE_COOL_RATE
+            h = max(0.0, h)
             m = m * (1.0 - (h / 120.0) * 0.01)
             s = s - 0.05
             e = e - 0.12

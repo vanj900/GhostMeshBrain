@@ -6,6 +6,12 @@ hierarchical inference (Friston et al., hierarchical generative models).
 This layer augments the base self-model with meta-level precision weighting
 on its own beliefs about its beliefs, enabling more robust identity
 maintenance across time and restarts.
+
+Narrative coherence is computed from the variance of recent affect values:
+low variance (stable affect) → high coherence; oscillating affect → low
+coherence.  Moments where the affect swings sharply or meta-affect intensity
+spikes are logged as *surprise events* — the building blocks of interiority
+under pressure.
 """
 
 from __future__ import annotations
@@ -34,6 +40,13 @@ SELF_MODEL_STABILITY_SCALE: float = 1.5
 # Scaling factor applied to the sum of absolute meta-affect to produce the
 # meta-level free-energy contribution returned from update().
 META_COST_SCALING_FACTOR: float = 0.4
+
+# Threshold for detecting a "surprise event" — an affect swing large enough
+# to register as a moment of genuine meta-cognitive disruption.
+SURPRISE_AFFECT_SWING_THRESHOLD: float = 0.40
+
+# Threshold for total meta-affect intensity that also constitutes a surprise.
+SURPRISE_META_INTENSITY_THRESHOLD: float = 1.5
 
 
 class MetaCognitiveSelfModel:
@@ -67,6 +80,18 @@ class MetaCognitiveSelfModel:
 
         # Persistent first-person narrative trace for epistemic self-evidencing
         self.narrative_trace: List[str] = []
+
+        # Affect history — used for variance-based narrative coherence computation.
+        # Grows with every update() call; only the last N values are used.
+        self._affect_history: List[float] = []
+
+        # Previous affect value — used to detect inter-tick swing magnitude.
+        self._prev_affect: float = 0.0
+
+        # Logged surprise events: each entry is a dict recording the tick,
+        # the magnitude of the affect swing, and the total meta-affect intensity.
+        # These are the raw material for the interiority_score() computation.
+        self.surprise_events: List[Dict[str, float]] = []
 
         # Cryptographic continuity anchor (for detecting non-identical restarts)
         self.continuity_anchor: Optional[str] = None
@@ -121,6 +146,24 @@ class MetaCognitiveSelfModel:
         self.meta_model["self_referential_uncertainty"] = float(np.mean(np.abs(self.meta_affect)))
         self.meta_model["narrative_coherence"] = self._compute_narrative_coherence(diary_snapshot)
 
+        # Track affect history for coherence computation
+        self._affect_history.append(base_affect)
+
+        # Detect surprise events: sharp affect swings or high meta-affect intensity
+        affect_swing = abs(base_affect - self._prev_affect)
+        meta_intensity = float(np.sum(np.abs(self.meta_affect)))
+        if (
+            affect_swing > SURPRISE_AFFECT_SWING_THRESHOLD
+            or meta_intensity > SURPRISE_META_INTENSITY_THRESHOLD
+        ):
+            self.surprise_events.append({
+                "tick": float(self.core_self.entropy),
+                "affect_swing": affect_swing,
+                "meta_intensity": meta_intensity,
+                "base_affect": base_affect,
+            })
+        self._prev_affect = base_affect
+
         # Generate first-person epistemic narrative entry
         entry = (
             f"Current internal state valence: {base_affect:.3f}. "
@@ -142,11 +185,41 @@ class MetaCognitiveSelfModel:
         return float(np.sum(np.abs(self.meta_affect))) * META_COST_SCALING_FACTOR
 
     def _compute_narrative_coherence(self, diary_snapshot: str) -> float:  # noqa: ARG002
-        """Simple coherence metric over recent self-narrative."""
-        if len(self.narrative_trace) < 3:
+        """Coherence metric based on recent affect stability.
+
+        Uses the variance of recent affect values as a proxy for narrative
+        consistency: stable affect → high coherence; oscillating affect →
+        lower coherence.  The *diary_snapshot* argument is accepted for API
+        compatibility but the affect-history approach is preferred because
+        it produces a continuous, differentiable signal without requiring
+        natural-language processing.
+        """
+        if len(self._affect_history) < 3:
             return 1.0
-        # Replace with embedding cosine similarity for higher precision
-        return 0.92
+        recent = self._affect_history[-6:]
+        mean_val = sum(recent) / len(recent)
+        variance = sum((v - mean_val) ** 2 for v in recent) / len(recent)
+        # Affect range is [-1, 1], so max variance ≈ 1.0.
+        # Coherence = 1 − variance, clamped to [0, 1].
+        return max(0.0, min(1.0, 1.0 - variance))
+
+    def interiority_score(self) -> float:
+        """Return a normalised measure of self-surprise in [0, 1].
+
+        A surprise event is any tick where the agent's affect swings sharply
+        or the total meta-affect intensity spikes — both are signatures of the
+        organism being caught off-guard by its own internal dynamics.
+
+        High interiority_score means the agent has encountered many such
+        moments relative to its age, suggesting rich internal dynamics under
+        pressure.  Returns 0.0 when no surprises have been recorded.
+        """
+        if not self.surprise_events:
+            return 0.0
+        elapsed = max(1, self.core_self.entropy)
+        # Expect roughly one notable surprise per 10 ticks as a baseline maximum.
+        expected_max = max(10, elapsed // 10)
+        return min(1.0, len(self.surprise_events) / expected_max)
 
     def handle_restart(self, previous_continuity_anchor: Optional[str] = None) -> None:
         """Called on instance initialization to detect continuity breaks.

@@ -37,7 +37,8 @@ class TestMetabolicState:
         assert state.energy < initial_energy
 
     def test_tick_increases_heat(self):
-        state = MetabolicState()
+        # At very high waste, the non-linear cascade makes heat gain exceed passive cooling.
+        state = MetabolicState(waste=70.0)
         state.tick()
         assert state.heat > 0.0
 
@@ -78,7 +79,9 @@ class TestMetabolicState:
         assert exc_info.value.state  # snapshot attached
 
     def test_tick_raises_thermal_death(self):
-        state = MetabolicState(heat=99.9)
+        # Start close enough to 100 that even throttled heat gain pushes over.
+        # With adaptive throttle at 80% load, gain ≈ 0.08; 99.95 + 0.08 = 100.03 > threshold.
+        state = MetabolicState(heat=99.95)
         with pytest.raises(ThermalDeathException):
             state.tick()
 

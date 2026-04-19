@@ -39,9 +39,14 @@ REPAIR_INTEGRITY_THRESHOLD: float = 45.0
 REPAIR_STABILITY_THRESHOLD: float = 40.0
 
 # Anticipatory REPAIR thresholds (Phase 3)
-REPAIR_ALLOSTATIC_THRESHOLD: float = 55.0   # trigger repair when load is high
+REPAIR_ALLOSTATIC_THRESHOLD: float = 70.0   # trigger repair when load is high (raised: avoid repair-zombie at moderate AL)
 REPAIR_PROJECTED_INTEGRITY: float = 50.0    # trigger if projected integrity crosses this
 REPAIR_PROJECTED_STABILITY: float = 45.0    # trigger if projected stability crosses this
+
+# Anticipatory REST threshold — REST reduces heat/waste; REPAIR adds heat/waste.
+# Proactively resting at moderate AL prevents the AL↔heat feedback loop from
+# escalating to crisis levels that only REPAIR (which adds heat) can nominally address.
+REST_ALLOSTATIC_THRESHOLD: float = 65.0
 
 # Stage evolution thresholds (based on entropy ticks + health metrics)
 STAGE_THRESHOLDS: dict[str, int] = {
@@ -56,12 +61,22 @@ _AL_W_SAFE: float = 25.0       # safe waste ceiling
 _AL_ALPHA_T: float = 0.015     # heat contribution rate
 _AL_ALPHA_W: float = 0.010     # waste contribution rate
 _AL_ALPHA_FE: float = 0.003    # free-energy contribution rate
-_AL_BETA_REPAIR: float = 0.12  # repair reduces allostatic load
-_AL_BETA_REST: float = 0.08    # rest reduces allostatic load (doubled for better recovery)
+_AL_BETA_REPAIR: float = 0.22  # repair reduces allostatic load (raised: repair must break the AL↔heat loop)
+_AL_BETA_REST: float = 0.14    # rest reduces allostatic load (raised: rest must be a real pressure valve)
 
-# Passive cooling — mild baseline heat dissipation every tick (applied after death checks).
-# Acts as thermal radiation; prevents long-run heat runaway without rescuing terminal spikes.
-_PASSIVE_COOL_RATE: float = 0.05
+# Passive cooling — baseline heat dissipation every tick (applied after death checks).
+# Acts as thermal radiation; prevents slow heat runaway at normal waste/load without
+# rescuing terminal spikes (waste>60 + AL>80 will still overwhelm cooling and kill).
+# At load=1.0 with waste≈11 and AL≈30 this keeps net heat near zero; higher waste or AL
+# still accumulate heat, so REST/REPAIR remain necessary and death remains real.
+_PASSIVE_COOL_RATE: float = 0.20
+
+# Adaptive thermal throttle: when heat exceeds this level the tick() method
+# applies a mild compute-load reduction (THERMAL_THROTTLE_FACTOR) that forces
+# self-regulation rather than blind grinding.  Death remains possible if the
+# organism ignores heat signals long enough for waste→heat cascade to take over.
+_THERMAL_THROTTLE_HEAT: float = 65.0   # heat level that starts throttling
+_THERMAL_THROTTLE_FACTOR: float = 0.80 # effective_load = load * factor above threshold
 
 # DECIDE streak fatigue constants (Phase 4)
 _DECIDE_STREAK_FREE: int = 10   # streak ticks before fatigue kicks in
@@ -160,6 +175,14 @@ class MetabolicState:
         # Snapshot free energy before decay so we can derive affect
         fe_before = self._prev_free_energy
 
+        # Adaptive thermal throttle: reduce effective load when heat is elevated,
+        # mimicking thermal-throttling in physical hardware.  Forces self-regulation
+        # (REST/REPAIR) rather than blind grinding through rising heat.  Death is
+        # still possible — the throttle only reduces the rate; it cannot stop a
+        # waste→heat cascade that the organism is neglecting.
+        if self.heat > _THERMAL_THROTTLE_HEAT:
+            compute_load = compute_load * _THERMAL_THROTTLE_FACTOR
+
         # Passive decay — all non-linear to create emergent dynamics
         self.energy -= compute_load * 0.12
         # Non-linear waste → heat cascade: high waste amplifies heat exponentially
@@ -234,9 +257,12 @@ class MetabolicState:
             al_loss += _AL_BETA_REST
         self.allostatic_load = max(0.0, min(100.0, self.allostatic_load + al_gain - al_loss))
 
-        # Allostatic load feeds back into metabolism — stress leaves a residue
+        # Allostatic load feeds back into metabolism — stress leaves a residue.
+        # Coefficient reduced 0.08→0.05 to soften the AL↔heat positive-feedback
+        # loop; the organism can still spiral to thermal death if it ignores
+        # sustained high waste/AL, but a competent manager can break the cycle.
         _al_ratio = self.allostatic_load / 100.0
-        self.heat += 0.08 * _al_ratio * compute_load
+        self.heat += 0.05 * _al_ratio * compute_load
         self.waste += 0.02 * _al_ratio * compute_load
 
         # ---- Reticular arousal gate -------------------------------------- #
@@ -292,6 +318,14 @@ class MetabolicState:
             or self.stability < REPAIR_STABILITY_THRESHOLD
         ):
             return "REPAIR"
+
+        # Anticipatory REST (Phase 3b) — proactively rest when allostatic load is
+        # building but hasn't hit crisis level yet.  REST dumps heat AND waste via
+        # the Janitor, directly breaking the AL↔heat feedback loop.  This fires
+        # BEFORE the REPAIR trigger so the organism cools down rather than doing
+        # repair (which adds heat/waste) when the real problem is thermal buildup.
+        if self.allostatic_load > REST_ALLOSTATIC_THRESHOLD:
+            return "REST"
 
         # Anticipatory REPAIR (Phase 3) — act early based on projected trajectory
         # or accumulated allostatic load, not just current crisis.

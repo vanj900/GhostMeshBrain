@@ -469,9 +469,10 @@ class GhostMesh:
 
         # Autonomous intervention: if the CollapseProbe detected a near-transition
         # on the PREVIOUS tick, and we're at evolved stage, apply an internal
-        # precision-relaxation + Dreamer boost *before* the action dispatch so the
-        # organism can self-correct its own rigidity without external nudging.
-        # A small metabolic cost is charged — self-regulation is not free.
+        # precision-relaxation + Dreamer boost *after mask rotation but before the
+        # action dispatch* so the organism can self-correct its own rigidity without
+        # external nudging.  A small metabolic cost is charged — self-regulation is
+        # not free.
         if (
             self.state.stage == "evolved"
             and self._last_collapse_snapshot is not None

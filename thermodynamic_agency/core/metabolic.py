@@ -65,8 +65,8 @@ _AL_BETA_REPAIR: float = 0.22  # repair reduces allostatic load (raised: repair 
 _AL_BETA_REST: float = 0.14    # rest reduces allostatic load (raised: rest must be a real pressure valve)
 # Evolved-stage passive allostatic recovery: when vitals are all within safe bounds
 # the organism slowly self-regulates back toward baseline without needing explicit
-# REST/REPAIR.  This rate is calibrated so that at minimum FE (~15) and stable
-# vitals (heat<40, waste<25) there is a net drain of ~0.035/tick.  The condition
+# REST/REPAIR. This rate is calibrated so that at minimum FE (~15) and stable
+# vitals (heat<40, waste<25) there is a net drain of ~0.035/tick. The condition
 # gate (energy>60, heat<40, waste<25) ensures the drain only fires during genuine
 # stability — if the organism is actually stressed, REST/REPAIR are still required.
 _AL_PASSIVE_DRAIN_EVOLVED: float = 0.08

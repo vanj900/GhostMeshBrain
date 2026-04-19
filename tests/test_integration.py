@@ -116,7 +116,16 @@ class TestPulseIntegration:
         mesh._last_collapse_snapshot = fake_snap
 
         entries_before = mesh.diary.entry_count()
+        # Seed a non-zero precision weight for heat so relaxation can be verified
+        mesh._last_precision_weights = {"heat": 3.0, "stability": 2.5, "energy": 2.0}
+        heat_prec_before = mesh._last_precision_weights["heat"]
+        stability_prec_before = mesh._last_precision_weights["stability"]
+        energy_before = mesh.state.energy
+        heat_before = mesh.state.heat
+        waste_before = mesh.state.waste
+
         mesh._apply_autonomic_intervention()
+
         entries_after = mesh.diary.entry_count()
 
         # Should have added a diary entry
@@ -128,3 +137,16 @@ class TestPulseIntegration:
         assert intervention_entries, "Expected an AUTONOMIC_INTERVENTION diary entry"
         # Mask should now be Dreamer
         assert mesh.rotator.active.name == "Dreamer"
+        # Precision relaxation: heat and stability weights should be 20% lower
+        assert mesh._last_precision_weights["heat"] == pytest.approx(
+            heat_prec_before * 0.80, abs=1e-6
+        ), "heat precision weight should be reduced by 20%"
+        assert mesh._last_precision_weights["stability"] == pytest.approx(
+            stability_prec_before * 0.80, abs=1e-6
+        ), "stability precision weight should be reduced by 20%"
+        # Non-relaxed vital should be unchanged
+        assert mesh._last_precision_weights["energy"] == pytest.approx(2.0)
+        # Metabolic cost: ΔE=-1.5, ΔT=+0.8, ΔW=+0.5
+        assert mesh.state.energy == pytest.approx(energy_before - 1.5, abs=1e-6)
+        assert mesh.state.heat == pytest.approx(heat_before + 0.8, abs=1e-6)
+        assert mesh.state.waste == pytest.approx(waste_before + 0.5, abs=1e-6)

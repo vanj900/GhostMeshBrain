@@ -240,7 +240,7 @@ class MaskRotator:
         elif metabolic_hint == "DECIDE" and affect >= -0.1:
             # Evolved-stage bias: if we've been stuck in a non-exploratory mask
             # for too long and affect is healthy, rotate to Dreamer to prevent
-            # Guardian attractor lock-in.  This re-balances dwell-time that was
+            # Guardian attractor lock-in. This re-balances dwell-time that was
             # previously tuned only for the "aware" stage.
             _non_exploratory = self._state.active_mask.name not in (
                 "Dreamer", "DefaultMode"

@@ -12,6 +12,17 @@ from thermodynamic_agency.cognition.collapse_probe import (
     _DREAMER_MASKS,
 )
 
+# Equalised, low-magnitude precision weights used in the intervention tests.
+# Represents a deliberately uncommitted predictive policy where no single
+# vital signal is over-weighted — i.e. precision relaxation.
+_RELAXED_PRECISION: dict[str, float] = {
+    "energy": 1.0,
+    "heat": 1.0,
+    "waste": 1.0,
+    "integrity": 1.0,
+    "stability": 1.0,
+}
+
 
 class TestShannonEntropy:
     def test_uniform_two_classes(self):
@@ -396,23 +407,18 @@ class TestInterventionRecovery:
       external nudge is necessary to escape.
     """
 
-    # Shared precision weights used for the "relaxed" intervention condition.
-    # Equalised, low-magnitude weights represent a deliberately less committed
-    # predictive policy — i.e. the system is no longer over-weighting any
-    # single vital signal.
-    _RELAXED_PRECISION: dict = {
-        "energy": 1.0,
-        "heat": 1.0,
-        "waste": 1.0,
-        "integrity": 1.0,
-        "stability": 1.0,
-    }
-
     def _build_stressed_state(self, probe: CollapseProbe) -> CollapseSnapshot:
         """Drive the probe into a near_transition state via 200 ticks of
         sustained Guardian dominance and rising allostatic load."""
-        snap = None
-        for i in range(200):
+        snap = probe.update(
+            action="REPAIR",
+            mask="Guardian",
+            free_energy=55.0,
+            allostatic_load=65.0,
+            energy=40.0,
+            heat=50.0,
+        )
+        for i in range(1, 200):
             snap = probe.update(
                 action="REPAIR",
                 mask="Guardian",
@@ -450,7 +456,7 @@ class TestInterventionRecovery:
                 allostatic_load=20.0,
                 energy=75.0,
                 heat=20.0,
-                precision_weights=self._RELAXED_PRECISION,
+                precision_weights=_RELAXED_PRECISION,
             )
 
         # After 500 ticks of intervention the system should have escaped the
@@ -528,7 +534,7 @@ class TestInterventionRecovery:
                 allostatic_load=20.0,
                 energy=75.0,
                 heat=20.0,
-                precision_weights=self._RELAXED_PRECISION,
+                precision_weights=_RELAXED_PRECISION,
             )
 
         delta = snap_intervention.plasticity_index - snap_control.plasticity_index

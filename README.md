@@ -68,17 +68,124 @@ below.
 
 ---
 
+## In Action — 25 000-tick evolved run (death-memory enabled)
+
+The first long-horizon stress test: 25 000 ticks at `seed=42`, `compute_load=1.0`,
+with `--death-memory` active and full stochastic environmental events.  Run at
+**350.8 ticks/s** (71 seconds wall-clock).
+
+```bash
+python examples/stress_test.py --ticks 25000 --seed 42 --death-memory --no-hud
+```
+
+### 25 000-tick results summary
+
+| Metric | 10k (balanced) | 25k (death-memory) |
+|---|---|---|
+| **Lives / Deaths** | 1 / 0 | **1 / 0** |
+| **Death-memory triggered** | — | **No** (organism never died) |
+| **Final stage** | evolved | **evolved** |
+| **Final health** | 90.7 | **77.5** |
+| **Near-death ticks** | 0 | **0** |
+| **Avg energy** | 57.5 | **50.0** (final 36.9) |
+| **Avg heat** | 8.5 | **8.1** (final 0.0) |
+| **Avg waste** | 4.8 | **4.4** |
+| **Avg integrity** | — | **97.6** (final 98.4) |
+| **Avg stability** | — | **97.9** (final 99.9) |
+| **Avg allostatic load** | 63.21 | **64.24** |
+| **Avg affect** | −0.093 | **−0.121** |
+| **Avg free energy** | 8.12 | **10.21** |
+| **Max DECIDE streak** | 272 | **272** |
+| **Preventive Maint. Idx** | — | **0.500** |
+
+**Action distribution (25k):**
+
+| Action | Count | % |
+|---|---|---|
+| DECIDE | 19 422 | 77.7 % |
+| REST | 5 474 | 21.9 % |
+| FORAGE | 102 | 0.4 % |
+| REPAIR | 2 | 0.0 % |
+
+**Personality mask distribution (25k):**
+
+| Mask | Count | % |
+|---|---|---|
+| DefaultMode | 9 500 | 38.0 % |
+| Guardian | 8 110 | **32.4 %** |
+| CentralExec | 3 351 | 13.4 % |
+| Judge | 2 660 | 10.6 % |
+| Dreamer | 1 376 | **5.5 %** |
+| Courier | 3 | 0.0 % |
+
+**Stage transitions:**
+
+| Tick | Stage reached |
+|---|---|
+| 1 | `dormant` |
+| 100 | `emerging` |
+| 500 | `aware` |
+| **10 000** | **`evolved`** |
+
+### Behavioral shift at the evolution boundary
+
+The most significant finding is a **regime change at tick 10 000** — the moment
+the organism crosses into the `evolved` stage:
+
+| Window | Avg energy | Allostatic load | Avg free energy | Dreamer % | Guardian % | Avg affect |
+|---|---|---|---|---|---|---|
+| t = 0 – 5k | 57.1 | 61.4 | 8.45 | 9.5 % | 22.1 % | −0.0947 |
+| t = 5k – 10k | 58.2 | 65.0 | 7.77 | 10.4 % | 21.4 % | −0.0930 |
+| t = 10k – 15k *(evolved)* | 45.0 | **65.0** | 11.62 | **2.7 %** | **40.4 %** | −0.1382 |
+| t = 15k – 20k | 45.2 | **65.0** | 11.53 | 2.8 % | 38.3 % | −0.1450 |
+| t = 20k – 25k | 44.7 | **65.0** | 11.71 | 2.1 % | **40.0 %** | −0.1341 |
+
+**What this tells us:**
+
+- ✅ **One long evolved life** — the organism never died across 25 000 ticks.
+  Death-memory was active but never needed to fire.  Structural health
+  (integrity 97.6, stability 97.9) and thermal management (heat avg 8.1,
+  final 0.0) were excellent throughout.
+- ⚠️ **Dreamer collapsed at evolution** — Dreamer fell from ~10 % (pre-evolution)
+  to ~2.7 % immediately after crossing the `evolved` threshold and never
+  recovered.  Guardian nearly doubled to ~40 %.  The organism becomes more
+  anxious, not more expansive, when it reaches its highest development stage.
+  The mask-routing logic is calibrated for `aware`-stage pressure; the
+  `evolved` stage needs a re-balance that gives Dreamer more airtime when
+  vitals are stable.
+- ⚠️ **Allostatic load saturated at 65.0** — the load ceiling was reached by
+  tick ~5 000 and never drained for the remaining 20 000 ticks.  No active
+  recovery path bled it off.  At 100k+ runs this will be locked at maximum
+  with no homeostatic relief.
+- ⚠️ **Energy trending lower post-evolution** — average energy dropped from
+  ~57–58 (pre-evolution) to ~44–45 after tick 10 000, ending at 36.9.  Not
+  yet dangerous, but a sustained downward drift that needs watching.
+- ⚠️ **Free energy jumped post-evolution** — the organism experienced *more*
+  predictive surprise (avg 11.6) after reaching `evolved` than before (avg 8.1),
+  consistent with self-mod proposals generating uncertainty.  Self-mod
+  proposal counts are not yet captured in the vitals JSONL (tracked internally
+  by `RunLogger` but absent from `_write_vitals_log`).
+
+**Verdict:** The baseline is clean and the organism is "alive enough."  The
+priority fixes before a 50k / 100k run are: (1) re-balance Dreamer dwell-time
+at the `evolved` stage, (2) add a drain path for allostatic load at that stage,
+and (3) expose `self_mod_approved` / `self_mod_blocked` in the vitals log so
+the next long run can answer what the organism actually tried to change.
+
+---
+
 ## Mortality & balance
 
 **Mortality is non-negotiable** — without real, irreversible death GhostMesh
 would be just another immortal simulation.  The goal is *balanced* mortality:
 
-| Load | Stressor | Outcome |
-|---|---|---|
-| 1.0 (default) | none | Single life, 10 000 ticks, `evolved` stage |
-| 1.8 | none | Single life, survives 5 000 ticks |
-| 2.5 | 15%, bursty | Survives with 3 near-death events |
-| 3.0 | 30%, hostile | 2 `EnergyDeathException` deaths in 5 000 ticks |
+| Load | Ticks | Stressor | Outcome |
+|---|---|---|---|
+| 1.0 (default) | 10 000 | none | Single life, `evolved` stage, 0 near-death ticks |
+| 1.0 (default) | **25 000** | none + death-memory | **Single life, `evolved` stage, 0 near-death ticks — Guardian-heavy post-evolution, allostatic load plateaued at 65** |
+| 1.8 | 5 000 | none | Single life, survives |
+| 2.5 | 5 000 | 15%, bursty | Survives with 3 near-death events |
+| 3.0 | 5 000 | 30%, hostile | 2 `EnergyDeathException` deaths |
 
 At sensible defaults the Ghost lives long enough to develop behavioral depth
 (Dreamer mask 11%, balanced mask rotation, max DECIDE streak 272).  At extreme
@@ -591,6 +698,9 @@ full documentation.
 ```bash
 # 10000-tick run (default load), logs to /tmp/ghost_runs/
 python examples/stress_test.py
+
+# 25000-tick run with death-memory (recommended next step)
+python examples/stress_test.py --ticks 25000 --seed 42 --death-memory --no-hud
 
 # Multi-load comparison (4 sessions: 0.5×, 1.0×, 1.5×, 2.0×)
 python examples/stress_test.py --multi --ticks 10000

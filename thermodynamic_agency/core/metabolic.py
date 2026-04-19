@@ -63,6 +63,13 @@ _AL_ALPHA_W: float = 0.010     # waste contribution rate
 _AL_ALPHA_FE: float = 0.003    # free-energy contribution rate
 _AL_BETA_REPAIR: float = 0.22  # repair reduces allostatic load (raised: repair must break the AL↔heat loop)
 _AL_BETA_REST: float = 0.14    # rest reduces allostatic load (raised: rest must be a real pressure valve)
+# Evolved-stage passive allostatic recovery: when vitals are all within safe bounds
+# the organism slowly self-regulates back toward baseline without needing explicit
+# REST/REPAIR. This rate is calibrated so that at minimum FE (~15) and stable
+# vitals (heat<40, waste<25) there is a net drain of ~0.035/tick. The condition
+# gate (energy>60, heat<40, waste<25) ensures the drain only fires during genuine
+# stability — if the organism is actually stressed, REST/REPAIR are still required.
+_AL_PASSIVE_DRAIN_EVOLVED: float = 0.08
 
 # Passive cooling — baseline heat dissipation every tick (applied after death checks).
 # Acts as thermal radiation; prevents slow heat runaway at normal waste/load without
@@ -260,6 +267,17 @@ class MetabolicState:
             al_loss += _AL_BETA_REPAIR
         elif self.last_action == "REST":
             al_loss += _AL_BETA_REST
+        # Passive recovery at evolved stage: when all vitals are within safe bounds
+        # the organism can slowly self-regulate allostatic load without explicit
+        # REST/REPAIR cycles.  This prevents the "no drain path" saturation that
+        # pins AL at 65 post-evolution and locks the organism into Guardian attractor.
+        if (
+            self.stage == "evolved"
+            and self.energy > 60.0
+            and self.heat < 40.0
+            and self.waste < 25.0
+        ):
+            al_loss += _AL_PASSIVE_DRAIN_EVOLVED
         self.allostatic_load = max(0.0, min(100.0, self.allostatic_load + al_gain - al_loss))
 
         # Allostatic load feeds back into metabolism — stress leaves a residue.

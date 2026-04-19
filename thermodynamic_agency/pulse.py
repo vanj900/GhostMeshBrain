@@ -436,9 +436,6 @@ class GhostMesh:
         if self._show_hud:
             print_hud(self.state.to_dict(), self.rotator.status())
 
-        # 4. Log per-tick vitals (if enabled)
-        self._write_vitals_log(action, env_event)
-
         # Rotate mask based on action, affect, and limbic threat.
         # High amygdala threat → SalienceNet override.
         # Negative affect + stress → Guardian/Judge dominance.
@@ -451,6 +448,7 @@ class GhostMesh:
                 metabolic_hint="REPAIR",
                 affect=affect,
                 threat_level=threat,
+                stage=self.state.stage,
             )
         elif affect > 0.4:
             self.rotator.maybe_rotate(
@@ -458,6 +456,7 @@ class GhostMesh:
                 metabolic_hint="REST",
                 affect=affect,
                 threat_level=threat,
+                stage=self.state.stage,
             )
         else:
             self.rotator.maybe_rotate(
@@ -465,7 +464,21 @@ class GhostMesh:
                 metabolic_hint=action,
                 affect=affect,
                 threat_level=threat,
+                stage=self.state.stage,
             )
+
+        # Autonomous intervention: if the CollapseProbe detected a near-transition
+        # on the PREVIOUS tick, and we're at evolved stage, apply an internal
+        # precision-relaxation + Dreamer boost *after mask rotation but before the
+        # action dispatch* so the organism can self-correct its own rigidity without
+        # external nudging.  A small metabolic cost is charged — self-regulation is
+        # not free.
+        if (
+            self.state.stage == "evolved"
+            and self._last_collapse_snapshot is not None
+            and self._last_collapse_snapshot.is_near_transition
+        ):
+            self._apply_autonomic_intervention()
 
         # Dispatch action; _decide() returns (ethics-blocks, self_mod_result)
         ethics_blocks = 0
@@ -560,6 +573,14 @@ class GhostMesh:
                     },
                 )
             )
+
+        # 4. Log per-tick vitals (if enabled).
+        # Written here — after action dispatch and collapse probe update — so
+        # that self_mod_approved/blocked counts and the current-tick probe
+        # snapshot can both be included in the same record.
+        _sm_approved = self_mod_result.approved_count if self_mod_result else 0
+        _sm_blocked = self_mod_result.blocked_count if self_mod_result else 0
+        self._write_vitals_log(action, env_event, _sm_approved, _sm_blocked)
 
         # Log this tick
         self.run_logger.record(
@@ -814,6 +835,63 @@ class GhostMesh:
                     f"ΔM=+{report.integrity_gain:.1f} ΔS=+{report.stability_gain:.1f} "
                     f"allostatic_cost={report.allostatic_cost:.2f}"
                 ),
+            )
+        )
+
+    def _apply_autonomic_intervention(self) -> None:
+        """Internal precision-relaxation + Dreamer boost triggered by CollapseProbe.
+
+        Called automatically when the CollapseProbe's ``is_near_transition`` flag
+        was set on the *previous* tick — a 1-tick lag that lets the organism
+        self-correct its own rigidity without external nudging.
+
+        The intervention:
+        1. Reduces the precision weight on the ``heat`` and ``stability`` vitals
+           by 20% (precision relaxation — loosens the Guardian's grip).
+        2. Forces a Dreamer mask rotation to re-open the exploratory/plastic mode.
+        3. Applies a small metabolic cost so self-regulation is not free — the
+           organism genuinely pays to escape the attractor.
+
+        Metabolic cost: ΔE=-1.5, ΔT=+0.8, ΔW=+0.5
+        """
+        # Precision relaxation — dampen over-attention to threat vitals so the
+        # Dreamer's broader prior can be heard again.
+        for vital in ("heat", "stability"):
+            if vital in self._last_precision_weights:
+                self._last_precision_weights[vital] *= 0.80
+
+        # Force Dreamer mask — bypass the min_ticks guard so the boost is immediate.
+        self.rotator.maybe_rotate(
+            self.state.entropy,
+            force="Dreamer",
+        )
+
+        # Metabolic cost of self-regulation
+        self.state.apply_action_feedback(
+            delta_energy=-1.5,
+            delta_heat=0.8,
+            delta_waste=0.5,
+        )
+
+        snap = self._last_collapse_snapshot
+        self.diary.append(
+            DiaryEntry(
+                tick=self.state.entropy,
+                role="thought",
+                content=(
+                    f"AUTONOMIC_INTERVENTION: CollapseProbe near-transition "
+                    f"(score={snap.pre_collapse_score:.3f}, "
+                    f"guardian={snap.guardian_fraction:.2f}, "
+                    f"plasticity={snap.plasticity_index:.3f}) — "
+                    f"precision relaxation applied, Dreamer mask forced. "
+                    f"Metabolic cost: ΔE=-1.5 ΔT=+0.8 ΔW=+0.5."
+                ),
+                metadata={
+                    "autonomic_intervention": True,
+                    "pre_collapse_score": snap.pre_collapse_score,
+                    "guardian_fraction": snap.guardian_fraction,
+                    "plasticity_index": snap.plasticity_index,
+                },
             )
         )
 
@@ -1315,7 +1393,13 @@ class GhostMesh:
     # Vitals logging                                                        #
     # ------------------------------------------------------------------ #
 
-    def _write_vitals_log(self, action: str, env_event) -> None:
+    def _write_vitals_log(
+        self,
+        action: str,
+        env_event,
+        self_mod_approved: int = 0,
+        self_mod_blocked: int = 0,
+    ) -> None:
         """Append one JSON-lines record to the vitals log (if enabled)."""
         if not self._vitals_log:
             return
@@ -1345,6 +1429,8 @@ class GhostMesh:
             "compute_load": self._compute_load,
             "allostatic_load": round(s.allostatic_load, 3),
             "decide_streak": s.decide_streak,
+            "self_mod_approved": self_mod_approved,
+            "self_mod_blocked": self_mod_blocked,
         }
         # Append phase-transition probe signals when a snapshot is available
         if self._last_collapse_snapshot is not None:

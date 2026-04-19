@@ -143,3 +143,48 @@ class TestMetabolicState:
         data = json.loads(json_str)
         assert "energy" in data
         assert "heat" in data
+
+    def test_evolved_stage_passive_al_drain_when_stable(self):
+        """Evolved stage with stable vitals should passively drain allostatic load."""
+        from thermodynamic_agency.core.metabolic import _AL_PASSIVE_DRAIN_EVOLVED
+        # Set up an evolved organism with high AL but stable vitals
+        state = MetabolicState(energy=80.0, heat=20.0, waste=10.0,
+                               integrity=90.0, stability=90.0)
+        state.stage = "evolved"
+        state.allostatic_load = 50.0
+        al_before = state.allostatic_load
+        state.tick()
+        # AL should decrease (or at least not increase much) because passive drain fires
+        # Note: al_gain from stable vitals is small (~0.045), drain is 0.08, net ≈ -0.035/tick
+        assert state.allostatic_load < al_before, (
+            "Evolved stable organism should have decreasing allostatic load"
+        )
+
+    def test_evolved_stage_passive_al_drain_absent_when_stressed(self):
+        """Passive drain must NOT fire when vitals are outside stable bounds."""
+        state = MetabolicState(energy=80.0, heat=50.0, waste=10.0,
+                               integrity=90.0, stability=90.0)
+        state.stage = "evolved"
+        state.allostatic_load = 50.0
+        al_before = state.allostatic_load
+        state.tick()
+        # heat=50 > 40 threshold, so passive drain should NOT activate;
+        # with heat elevated, al_gain > 0 and no passive drain → AL should rise
+        assert state.allostatic_load >= al_before, (
+            "Passive drain should be absent when heat is elevated"
+        )
+
+    def test_non_evolved_stage_no_passive_al_drain(self):
+        """Passive drain must NOT fire at aware stage even with stable vitals."""
+        state = MetabolicState(energy=80.0, heat=20.0, waste=10.0,
+                               integrity=90.0, stability=90.0)
+        state.stage = "aware"
+        state.allostatic_load = 50.0
+        al_before = state.allostatic_load
+        state.tick()
+        # At "aware" stage the passive drain constant is not applied;
+        # with stable vitals AL stays roughly flat (small FE-driven gain).
+        # The gain is ~0.045/tick, so allostatic_load should be >= al_before.
+        assert state.allostatic_load >= al_before, (
+            "Passive drain should not apply below evolved stage"
+        )

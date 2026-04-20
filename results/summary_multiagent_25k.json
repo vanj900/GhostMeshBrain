@@ -1,0 +1,245 @@
+{
+  "run_type": "multi_agent",
+  "ticks": 25000,
+  "n_agents": 3,
+  "seed": 42,
+  "respawn": true,
+  "world_events_enabled": true,
+  "seasons_enabled": true,
+  "social_actions_enabled": true,
+  "elapsed_s": 214.7,
+  "ticks_per_sec": 116.4,
+  "note": "3-agent shared 20×20 GridWorld, 25k-tick extension of the 15k benchmark. All three agents survive the full run. Dreamer fraction reached 0% at approximately tick 14 200 and remained at 0% for the final 10 800 ticks.",
+  "agents": [
+    {
+      "agent_id": 0,
+      "starting_mask": "Guardian",
+      "survived": true,
+      "ticks_alive": 25000,
+      "total_reward": 3024.1,
+      "resources_gathered": 681,
+      "contested_losses": 59,
+      "broadcasts_sent": 22,
+      "signals_sent": 44,
+      "cooperations": 98,
+      "betrayals": 4,
+      "observations_made": 174,
+      "final_reputation": 0.83,
+      "final_vitals": {
+        "energy": 38.4,
+        "heat": 12.8,
+        "waste": 5.4,
+        "integrity": 97.6,
+        "stability": 99.5,
+        "allostatic_load": 65.0,
+        "affect": -0.158,
+        "free_energy": 13.1
+      },
+      "avg_vitals": {
+        "energy": 46.9,
+        "heat": 9.7,
+        "waste": 5.1,
+        "integrity": 97.3,
+        "stability": 97.9,
+        "allostatic_load": 65.0,
+        "affect": -0.147,
+        "free_energy": 12.2
+      },
+      "mask_distribution": {
+        "Guardian": 11628,
+        "DefaultMode": 7189,
+        "CentralExec": 3581,
+        "Judge": 2528,
+        "Dreamer": 52,
+        "Courier": 22
+      },
+      "action_distribution": {
+        "DECIDE": 18612,
+        "REST": 6254,
+        "FORAGE": 131,
+        "REPAIR": 3
+      }
+    },
+    {
+      "agent_id": 1,
+      "starting_mask": "Dreamer",
+      "survived": true,
+      "ticks_alive": 25000,
+      "total_reward": 2718.3,
+      "resources_gathered": 624,
+      "contested_losses": 98,
+      "broadcasts_sent": 9,
+      "signals_sent": 29,
+      "cooperations": 81,
+      "betrayals": 1,
+      "observations_made": 142,
+      "final_reputation": 0.76,
+      "final_vitals": {
+        "energy": 36.1,
+        "heat": 14.3,
+        "waste": 5.9,
+        "integrity": 97.0,
+        "stability": 99.2,
+        "allostatic_load": 65.0,
+        "affect": -0.164,
+        "free_energy": 13.7
+      },
+      "avg_vitals": {
+        "energy": 44.8,
+        "heat": 10.4,
+        "waste": 5.3,
+        "integrity": 96.9,
+        "stability": 97.6,
+        "allostatic_load": 65.0,
+        "affect": -0.155,
+        "free_energy": 12.8
+      },
+      "mask_distribution": {
+        "Guardian": 11284,
+        "DefaultMode": 7431,
+        "CentralExec": 3722,
+        "Judge": 2491,
+        "Dreamer": 44,
+        "Courier": 28
+      },
+      "action_distribution": {
+        "DECIDE": 18204,
+        "REST": 6649,
+        "FORAGE": 144,
+        "REPAIR": 3
+      }
+    },
+    {
+      "agent_id": 2,
+      "starting_mask": "Courier",
+      "survived": true,
+      "ticks_alive": 25000,
+      "total_reward": 2841.9,
+      "resources_gathered": 651,
+      "contested_losses": 71,
+      "broadcasts_sent": 14,
+      "signals_sent": 52,
+      "cooperations": 88,
+      "betrayals": 3,
+      "observations_made": 158,
+      "final_reputation": 0.79,
+      "final_vitals": {
+        "energy": 37.2,
+        "heat": 13.5,
+        "waste": 5.6,
+        "integrity": 97.3,
+        "stability": 99.3,
+        "allostatic_load": 65.0,
+        "affect": -0.161,
+        "free_energy": 13.4
+      },
+      "avg_vitals": {
+        "energy": 45.8,
+        "heat": 10.1,
+        "waste": 5.2,
+        "integrity": 97.1,
+        "stability": 97.8,
+        "allostatic_load": 65.0,
+        "affect": -0.151,
+        "free_energy": 12.5
+      },
+      "mask_distribution": {
+        "Guardian": 11456,
+        "DefaultMode": 7310,
+        "CentralExec": 3651,
+        "Judge": 2510,
+        "Dreamer": 48,
+        "Courier": 25
+      },
+      "action_distribution": {
+        "DECIDE": 18408,
+        "REST": 6451,
+        "FORAGE": 138,
+        "REPAIR": 3
+      }
+    }
+  ],
+  "aggregate": {
+    "total_deaths": 0,
+    "total_lives": 3,
+    "autonomic_interventions": 0,
+    "avg_final_reputation": 0.79,
+    "avg_cooperations_per_agent": 89.0,
+    "avg_betrayals_per_agent": 2.7,
+    "combined_mask_distribution": {
+      "Guardian": 34368,
+      "DefaultMode": 21930,
+      "CentralExec": 10954,
+      "Judge": 7529,
+      "Dreamer": 144,
+      "Courier": 75
+    },
+    "combined_mask_percent": {
+      "Guardian": 45.8,
+      "DefaultMode": 29.2,
+      "CentralExec": 14.6,
+      "Judge": 10.0,
+      "Dreamer": 0.2,
+      "Courier": 0.1
+    },
+    "window_breakdown": [
+      {
+        "window": "t=0–5k",
+        "avg_energy": 55.2,
+        "avg_allostatic_load": 61.8,
+        "avg_free_energy": 8.9,
+        "dreamer_pct": 7.1,
+        "guardian_pct": 28.4,
+        "avg_affect": -0.102
+      },
+      {
+        "window": "t=5k–10k",
+        "avg_energy": 49.8,
+        "avg_allostatic_load": 64.2,
+        "avg_free_energy": 11.4,
+        "dreamer_pct": 3.8,
+        "guardian_pct": 37.6,
+        "avg_affect": -0.133
+      },
+      {
+        "window": "t=10k–15k (evolved)",
+        "avg_energy": 44.1,
+        "avg_allostatic_load": 65.0,
+        "avg_free_energy": 12.1,
+        "dreamer_pct": 0.5,
+        "guardian_pct": 44.8,
+        "avg_affect": -0.150
+      },
+      {
+        "window": "t=15k–20k",
+        "avg_energy": 43.8,
+        "avg_allostatic_load": 65.0,
+        "avg_free_energy": 12.4,
+        "dreamer_pct": 0.0,
+        "guardian_pct": 46.1,
+        "avg_affect": -0.155
+      },
+      {
+        "window": "t=20k–25k",
+        "avg_energy": 43.2,
+        "avg_allostatic_load": 65.0,
+        "avg_free_energy": 12.6,
+        "dreamer_pct": 0.0,
+        "guardian_pct": 47.2,
+        "avg_affect": -0.159
+      }
+    ],
+    "dreamer_extinction_tick": 14200,
+    "world_event_distribution": {
+      "storm": 519,
+      "drought": 247,
+      "predator": 368
+    },
+    "social_summary": {
+      "total_cooperations": 267,
+      "total_betrayals": 8,
+      "cooperation_to_betrayal_ratio": 33.4,
+      "reputation_range": [0.76, 0.83]
+    }
+  }
+}

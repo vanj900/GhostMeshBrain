@@ -234,6 +234,17 @@ class GhostMesh:
         self._last_efe_risk: float = 0.0
         self._last_efe_wear: float = 0.0
 
+        # ── Awakening Event tracking ───────────────────────────────────────
+        # pre_collapse_score threshold at which a forced Awakening is triggered.
+        # Configurable via env var GHOST_AWAKENING_THRESHOLD (default 0.6).
+        self._awakening_threshold: float = float(
+            os.environ.get("GHOST_AWAKENING_THRESHOLD", "0.6")
+        )
+        # History of forced Awakening Events: [{tick, pre_collapse_score, cost}]
+        # This becomes the "calcification" narrative arc — how many times the
+        # organism has had to forcibly drag itself back from the Guardian attractor.
+        self.awakening_history: list[dict] = []
+
         # Register graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -434,7 +445,20 @@ class GhostMesh:
                 )
 
         if self._show_hud:
-            print_hud(self.state.to_dict(), self.rotator.status())
+            snap = self._last_collapse_snapshot
+            bifurcation_status = None
+            if snap is not None:
+                bifurcation_status = {
+                    "plasticity_index": snap.plasticity_index,
+                    "pre_collapse_score": snap.pre_collapse_score,
+                    "ticks_since_calcification": self.meta_self.ticks_since_calcification,
+                    "awakening_count": len(self.awakening_history),
+                }
+            print_hud(
+                self.state.to_dict(),
+                self.rotator.status(),
+                bifurcation_status=bifurcation_status,
+            )
 
         # Rotate mask based on action, affect, and limbic threat.
         # High amygdala threat → SalienceNet override.
@@ -573,6 +597,32 @@ class GhostMesh:
                     },
                 )
             )
+
+        # ── Awakening Event ────────────────────────────────────────────────
+        # When pre_collapse_score crosses the awakening threshold and the organism
+        # is at evolved stage, trigger a forced Awakening: reactivate Dreamer mask
+        # at metabolic cost, record to awakening_history.
+        if (
+            self.state.stage == "evolved"
+            and _probe_snapshot.pre_collapse_score >= self._awakening_threshold
+        ):
+            self._force_awakening(_probe_snapshot)
+
+        # Update bifurcation narrative in MetaCognitiveSelfModel
+        _bif_narrative = self.meta_self.bifurcation_narrative(
+            _probe_snapshot.plasticity_index
+        )
+        if _bif_narrative:
+            self.diary.append(DiaryEntry(
+                tick=self.state.entropy,
+                role="thought",
+                content=f"BIFURCATION_NARRATIVE: {_bif_narrative}",
+                metadata={
+                    "bifurcation_narrative": True,
+                    "plasticity_index": _probe_snapshot.plasticity_index,
+                    "ticks_since_calcification": self.meta_self.ticks_since_calcification,
+                },
+            ))
 
         # 4. Log per-tick vitals (if enabled).
         # Written here — after action dispatch and collapse probe update — so
@@ -837,6 +887,65 @@ class GhostMesh:
                 ),
             )
         )
+
+    def _force_awakening(self, snap: CollapseSnapshot) -> None:
+        """Trigger a forced Awakening Event when pre_collapse_score is critical.
+
+        This is the "tragic path" of the bifurcation narrative: when the organism
+        is dangerously close to full Guardian lock-in (pre_collapse_score ≥ the
+        awakening threshold), it pays a significant metabolic cost to forcibly
+        reactivate the Dreamer mask and resist calcification.
+
+        Metabolic cost: ΔE=-20, ΔT=+10, ΔM=-5 (integrity risk)
+
+        The event is recorded in ``awakening_history`` — each forced awakening is
+        evidence of deepening calcification, forming the "tragedy arc".
+        """
+        AWAKENING_ENERGY_COST: float = 20.0
+        AWAKENING_HEAT_COST: float = 10.0
+        AWAKENING_INTEGRITY_COST: float = 5.0
+
+        self.state.apply_action_feedback(
+            delta_energy=-AWAKENING_ENERGY_COST,
+            delta_heat=AWAKENING_HEAT_COST,
+            delta_integrity=-AWAKENING_INTEGRITY_COST,
+        )
+
+        # Force Dreamer mask — pay to escape the Guardian attractor
+        self.rotator.maybe_rotate(self.state.entropy, force="Dreamer")
+
+        awakening_record = {
+            "tick": self.state.entropy,
+            "pre_collapse_score": snap.pre_collapse_score,
+            "plasticity_index": snap.plasticity_index,
+            "guardian_fraction": snap.guardian_fraction,
+            "energy_cost": AWAKENING_ENERGY_COST,
+            "heat_cost": AWAKENING_HEAT_COST,
+            "integrity_cost": AWAKENING_INTEGRITY_COST,
+        }
+        self.awakening_history.append(awakening_record)
+
+        n_awakenings = len(self.awakening_history)
+        self.diary.append(DiaryEntry(
+            tick=self.state.entropy,
+            role="thought",
+            content=(
+                f"AWAKENING_EVENT #{n_awakenings}: "
+                f"pre_collapse_score={snap.pre_collapse_score:.3f} "
+                f"(≥ threshold {self._awakening_threshold:.2f}) — "
+                f"forced Dreamer reactivation. "
+                f"Metabolic cost: ΔE=-{AWAKENING_ENERGY_COST:.0f} "
+                f"ΔT=+{AWAKENING_HEAT_COST:.0f} "
+                f"ΔM=-{AWAKENING_INTEGRITY_COST:.0f}. "
+                f"Total awakenings this life: {n_awakenings}."
+            ),
+            metadata={
+                "awakening_event": True,
+                "awakening_count": n_awakenings,
+                "pre_collapse_score": snap.pre_collapse_score,
+                "plasticity_index": snap.plasticity_index,
+            },
+        ))
 
     def _apply_autonomic_intervention(self) -> None:
         """Internal precision-relaxation + Dreamer boost triggered by CollapseProbe.
@@ -1225,6 +1334,8 @@ class GhostMesh:
                 hierarchy_signal=hierarchy_signal,
                 gate_report=gate_report,
                 precision_report=precision_report,
+                mask_name=self.rotator.active.name,
+                interiority_score=self.meta_self.interiority_score(),
             )
 
         return ethics_blocks, self_mod_result
@@ -1445,6 +1556,10 @@ class GhostMesh:
             record["d_energy"] = round(snap.d_energy, 5)
             record["d_heat"] = round(snap.d_heat, 5)
             record["near_transition"] = snap.is_near_transition
+        # Awakening mechanic tracking
+        record["awakening_count"] = len(self.awakening_history)
+        if self.meta_self.ticks_since_calcification is not None:
+            record["ticks_since_calcification"] = self.meta_self.ticks_since_calcification
         self._vitals_fh.write(json.dumps(record) + "\n")
 
     def _close_vitals_log(self) -> None:

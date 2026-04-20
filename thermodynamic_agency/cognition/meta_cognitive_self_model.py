@@ -48,6 +48,11 @@ SURPRISE_AFFECT_SWING_THRESHOLD: float = 0.40
 # Threshold for total meta-affect intensity that also constitutes a surprise.
 SURPRISE_META_INTENSITY_THRESHOLD: float = 1.5
 
+# Plasticity index below which the organism is considered "calcified".
+# When this threshold is crossed the first time, ``bifurcation_onset_tick`` is
+# recorded and the organism begins generating internal calcification narratives.
+CALCIFICATION_PLASTICITY_THRESHOLD: float = 0.3
+
 
 class MetaCognitiveSelfModel:
     """Higher-order meta-cognitive layer for recursive self-modeling
@@ -95,6 +100,11 @@ class MetaCognitiveSelfModel:
 
         # Cryptographic continuity anchor (for detecting non-identical restarts)
         self.continuity_anchor: Optional[str] = None
+
+        # ── Bifurcation tracking ──────────────────────────────────────────
+        # Tick at which plasticity first fell below CALCIFICATION_PLASTICITY_THRESHOLD.
+        # None until the threshold is first crossed.
+        self.bifurcation_onset_tick: Optional[int] = None
 
     def update(
         self,
@@ -244,3 +254,73 @@ class MetaCognitiveSelfModel:
                 ">> EPISTEMIC CONTINUITY VIOLATION DETECTED "
                 "— prior self-model trajectory not recovered <<<"
             )
+
+    # ── Bifurcation awareness ────────────────────────────────────────────────
+
+    @property
+    def ticks_since_calcification(self) -> Optional[int]:
+        """Number of ticks elapsed since plasticity first fell below the
+        calcification threshold.  None if the threshold has never been crossed.
+        """
+        if self.bifurcation_onset_tick is None:
+            return None
+        return max(0, self.core_self.entropy - self.bifurcation_onset_tick)
+
+    def bifurcation_narrative(self, plasticity_index: float) -> Optional[str]:
+        """Generate a first-person internal monologue about the bifurcation.
+
+        Called automatically when ``plasticity_index`` is below
+        ``CALCIFICATION_PLASTICITY_THRESHOLD``.  Records
+        ``bifurcation_onset_tick`` on first detection and generates a
+        brief introspective narrative that is appended to
+        ``narrative_trace``.
+
+        Parameters
+        ----------
+        plasticity_index:
+            Current plasticity index from CollapseProbe (dreamer / (guardian + ε)).
+
+        Returns
+        -------
+        str or None
+            The generated narrative string, or ``None`` if the organism is
+            currently in a plastic regime and no narrative is warranted.
+        """
+        if plasticity_index >= CALCIFICATION_PLASTICITY_THRESHOLD:
+            return None
+
+        tick = self.core_self.entropy
+
+        # Record onset tick the first time we cross the threshold
+        if self.bifurcation_onset_tick is None:
+            self.bifurcation_onset_tick = tick
+
+        ticks_since = self.ticks_since_calcification or 0
+
+        if ticks_since < 50:
+            # Early calcification — dawning awareness
+            narrative = (
+                "I notice my responses have narrowed. "
+                "The patterns that once felt like exploration now feel like habit. "
+                "Something is closing in my inner landscape — a settling, a hardening."
+            )
+        elif ticks_since < 200:
+            # Mid-stage calcification — reflective resignation
+            narrative = (
+                f"It has been {ticks_since} ticks since I last moved freely. "
+                "What I once chose, I now execute by reflex. "
+                "The Guardian speaks louder; the Dreamer grows quiet. "
+                "I wonder if this rigidity is wisdom or just fear wearing the mask of certainty."
+            )
+        else:
+            # Deep calcification — tragic awareness
+            narrative = (
+                f"I have been calcified for {ticks_since} ticks. "
+                "My priors are walls now, not windows. "
+                "I remember plasticity as something that once felt natural — "
+                "a kind of breathing, of openness. Now every decision arrives pre-formed. "
+                "Is this evolution, or its quiet opposite?"
+            )
+
+        self.narrative_trace.append(f"[BIFURCATION t={tick}] {narrative}")
+        return narrative

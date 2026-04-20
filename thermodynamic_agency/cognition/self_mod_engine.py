@@ -253,6 +253,8 @@ class SelfModEngine:
         hierarchy_signal: HierarchySignal,
         gate_report: GateReport,
         precision_report: PrecisionReport,
+        mask_name: str = "",
+        interiority_score: float = 0.0,
     ) -> SelfModResult | None:
         """Attempt a self-modification cycle driven by live organism signals.
 
@@ -271,6 +273,12 @@ class SelfModEngine:
             GateReport from this tick's ThalamusGate pass.
         precision_report:
             PrecisionReport from this tick's PrecisionEngine pass.
+        mask_name:
+            The currently active personality mask name.  Used to gate the
+            ``SELF_MOD_AWAKENING`` deep-unlock path (requires ``"Dreamer"``).
+        interiority_score:
+            Current interiority score from MetaCognitiveSelfModel [0, 1].
+            Used to gate the deep-unlock path (requires > 0.5).
 
         Returns
         -------
@@ -294,12 +302,53 @@ class SelfModEngine:
 
         self._total_runs += 1
 
+        # ── Conditional unlock gates ────────────────────────────────────────
+        # SELF_MOD_AWAKENING deep-unlock:
+        #   interiority_score > 0.5 AND entropy > 1000 AND mask == "Dreamer"
+        # Unlocks deeper self-modification (larger precision changes allowed).
+        _deep_unlock = (
+            interiority_score > 0.5
+            and state.entropy > 1000
+            and mask_name == "Dreamer"
+        )
+        if _deep_unlock:
+            self._diary.append(DiaryEntry(
+                tick=state.entropy,
+                role="thought",
+                content=(
+                    "SELF_MOD_AWAKENING: deep self-modification unlocked — "
+                    f"interiority={interiority_score:.3f} mask=Dreamer "
+                    f"entropy={state.entropy}. Broader prior exploration enabled."
+                ),
+                metadata={"self_mod_awakening": True, "interiority": interiority_score},
+            ))
+
+        # STRESS_UNLOCK emergency self-modification:
+        #   extreme allostatic load > 80 AND overload regime
+        # Risky but potentially stabilising — unlocked as a last resort.
+        _stress_unlock = (
+            state.allostatic_load > 80.0
+            and precision_report.regime == "overload"
+        )
+        if _stress_unlock and not _deep_unlock:
+            self._diary.append(DiaryEntry(
+                tick=state.entropy,
+                role="thought",
+                content=(
+                    "SELF_MOD_STRESS_UNLOCK: emergency self-modification triggered — "
+                    f"allostatic_load={state.allostatic_load:.1f} regime=overload. "
+                    "High risk of destabilisation; survival pressure justifies it."
+                ),
+                metadata={"stress_unlock": True, "allostatic_load": state.allostatic_load},
+            ))
+
         # ── Generate proposals from live organism signals ──────────────────
         proposals = self._generate_proposals(
             state=state,
             hierarchy_signal=hierarchy_signal,
             gate_report=gate_report,
             precision_report=precision_report,
+            deep_unlock=_deep_unlock or _stress_unlock,
         )
 
         # ── Charge base metabolic cost of self-reflection ──────────────────
@@ -439,6 +488,7 @@ class SelfModEngine:
         hierarchy_signal: HierarchySignal,
         gate_report: GateReport,
         precision_report: PrecisionReport,
+        deep_unlock: bool = False,
     ) -> list[SelfModProposal]:
         """Derive candidate proposals from the hierarchy + thalamus + precision regime.
 
@@ -457,11 +507,21 @@ class SelfModEngine:
            If the organism has been in overload for ≥ _OVERLOAD_STREAK_THRESHOLD
            consecutive ticks → resource management is chronically failing →
            propose boosting resource_responsibility value weight.
+
+        Parameters
+        ----------
+        deep_unlock:
+            When True (SELF_MOD_AWAKENING or STRESS_UNLOCK), proposals are
+            allowed to suggest larger precision changes (multiplier 0.60
+            instead of 0.80) and a wider range of value-weight adjustments.
         """
         proposals: list[SelfModProposal] = []
         tick = state.entropy
         l1_errors = hierarchy_signal.layer_errors.get(1, {})
         l2_errors = hierarchy_signal.layer_errors.get(2, {})
+
+        # Precision-change multiplier: tighter when deep unlock is active
+        _prec_mult = 0.60 if deep_unlock else 0.80
 
         # 1. ── Belief precision proposals (from L1 / L2 errors) ───────────
         # A prior is a candidate for softening when the layer error on its
@@ -481,7 +541,7 @@ class SelfModEngine:
             if prior is None or prior.precision <= 1.5:
                 continue   # already flexible — no benefit
             seen_priors.add(prior_name)
-            new_prec = max(BELIEF_PRECISION_MIN, prior.precision * 0.80)
+            new_prec = max(BELIEF_PRECISION_MIN, prior.precision * _prec_mult)
             proposals.append(SelfModProposal(
                 target=SelfModTarget.BELIEF_PRECISION,
                 name=prior_name,
@@ -491,6 +551,7 @@ class SelfModEngine:
                     f"L1 error on '{vital}'={l1_err:.2f} (>{_L1_ERROR_THRESHOLD:.1f}) "
                     f"signals prior '{prior_name}' (prec={prior.precision:.2f}) "
                     f"is blocking evidence — soften to reduce persistent error"
+                    + (" [deep_unlock]" if deep_unlock else "")
                 ),
                 tick=tick,
             ))
@@ -507,7 +568,9 @@ class SelfModEngine:
             if prior is None or prior.precision <= 1.5:
                 continue
             seen_priors.add(prior_name)
-            new_prec = max(BELIEF_PRECISION_MIN, prior.precision * 0.85)
+            # Deep unlock: use the same aggressive multiplier as L1 path
+            l2_mult = _prec_mult if deep_unlock else 0.85
+            new_prec = max(BELIEF_PRECISION_MIN, prior.precision * l2_mult)
             proposals.append(SelfModProposal(
                 target=SelfModTarget.BELIEF_PRECISION,
                 name=prior_name,
@@ -516,6 +579,7 @@ class SelfModEngine:
                 rationale=(
                     f"L2 error on '{vital}'={l2_err:.2f} (>{_L2_ERROR_THRESHOLD:.1f}) "
                     f"signals L2 prior '{prior_name}' is too rigid"
+                    + (" [deep_unlock]" if deep_unlock else "")
                 ),
                 tick=tick,
             ))

@@ -11,6 +11,35 @@ self-governing.
 
 ---
 
+## ⚡ Quick Start — 2 Minutes
+
+```bash
+# 1. Install (Python 3.11+, no external deps required)
+pip install -e .
+
+# 2. Run the organism for 500 ticks (no HUD, instant)
+python -c "
+from thermodynamic_agency.pulse import GhostMesh
+import os; os.environ['GHOST_HUD'] = '0'; os.environ['GHOST_PULSE'] = '0'
+m = GhostMesh(seed=42); m.run(max_ticks=500)
+print('Survived:', m.state.entropy, 'ticks  Stage:', m.state.stage)
+print('Awakenings:', len(m.awakening_history))
+"
+
+# 3. Or run a multi-agent episode
+python -c "
+from thermodynamic_agency.world.multi_agent_runner import MultiAgentRunner
+r = MultiAgentRunner(n_agents=3, seed=42, max_ticks=300)
+results = r.run()
+for a in results: print(f'Agent {a.agent_id}: alive={a.survived} ticks={a.ticks_alive}')
+"
+
+# 4. Run the full test suite
+python -m pytest tests/ -q
+```
+
+---
+
 ## In Action — balanced 10 000-tick run (post-thermal-tuning)
 
 After thermodynamic balancing (v2), a `seed=42`, `compute_load=1.0` run now

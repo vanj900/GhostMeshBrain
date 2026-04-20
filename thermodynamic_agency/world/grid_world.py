@@ -14,7 +14,10 @@ FOREST    : on entry → -3 energy (movement cost); GATHER → +25 energy
 ROCKY     : on entry → +6 heat (heat build-up); GATHER → +10 integrity
             (repair-boosting terrain; respawns after 35 ticks)
 RADIATION : on entry → +8 heat          (passive hazard, not consumed)
+            dwell penalty → +4 heat/tick × 1.2^(dwell-1) when standing still
 TOXIN     : on entry → +10 waste        (passive hazard, not consumed)
+            dwell penalty → +5 waste/tick × 1.2^(dwell-1) when standing still
+MUD       : on entry → -2 energy (slows movement); reduces predator threat by 30%
 WALL      : impassable
 EMPTY     : no effect
 
@@ -75,6 +78,7 @@ class CellType(str, Enum):
     RADIATION = "radiation"
     TOXIN = "toxin"
     WALL = "wall"
+    MUD = "mud"         # slows movement (−2 energy); reduces predator threat
 
 
 class WorldAction(str, Enum):
@@ -127,7 +131,24 @@ _ENTRY_EFFECTS: dict[str, dict[str, float]] = {
     # Terrain movement costs
     CellType.FOREST.value: {"delta_energy": -3.0},   # dense undergrowth tires the agent
     CellType.ROCKY.value:  {"delta_heat": 6.0},       # exertion on rocky terrain builds heat
+    CellType.MUD.value:    {"delta_energy": -2.0},    # slogging through mud costs energy
 }
+
+# Per-tick dwell penalty applied when agent stays on a hazard cell without moving.
+# Scales with consecutive dwell ticks: base × dwell_factor^(dwell_ticks-1).
+_DWELL_EFFECTS: dict[str, dict[str, float]] = {
+    CellType.RADIATION.value: {"delta_heat": 4.0},    # prolonged radiation exposure
+    CellType.TOXIN.value: {"delta_waste": 5.0},       # toxin accumulates in tissue
+}
+_DWELL_SCALE: float = 1.2   # per additional dwell tick above the first
+
+# Predator-threat damping on MUD terrain (fraction subtracted from raw threat level).
+_MUD_PREDATOR_DAMPING: float = 0.30
+
+# Heat-bearing cells that contribute to body_temp_external ambient reading
+_HEAT_BEARING_CELLS: frozenset[str] = frozenset(
+    {CellType.RADIATION.value, CellType.ROCKY.value}
+)
 
 # Applied when agent executes GATHER on the cell (resources only)
 # Note: season multipliers are applied at runtime by GridWorld.step()
@@ -199,6 +220,24 @@ class WorldObservation:
     active_world_event:
         Human-readable label of the current global world event
         (e.g. ``"storm"``, ``"drought"``, ``"predator"``) or ``""`` if none.
+    terrain_ahead:
+        Cell type strings for the 3 cells directly north from the agent's
+        position (relative offsets (0,-1), (0,-2), (0,-3)).  Cells outside
+        the grid boundary are reported as WALL.
+    scent_gradient:
+        Normalised signal [0, 1] indicating proximity to the nearest
+        food-bearing cell (FOOD or FOREST) within the visible window.
+        0.0 = no food visible; 1.0 = food on the agent's current cell.
+        Falls off as 1 / (1 + min_manhattan_distance).
+    body_temp_external:
+        Ambient thermal load from nearby heat-producing cells (RADIATION,
+        ROCKY) in the visible window.  Normalised to [0, 1].
+    novel_hazard_active:
+        True when a NOVEL_HAZARD world event is currently active.  Guardian-
+        mode agents should treat this as a high-cost signal.
+    windfall_active:
+        True when a WINDFALL world event is currently active.  Only plastic
+        agents (Dreamer / Courier masks) can harvest the bonus resources.
     """
 
     position: tuple[int, int]
@@ -212,6 +251,12 @@ class WorldObservation:
     social_stress: float = 0.0                  # 0–1 social stressor level
     predator_threat: float = 0.0               # 0–1 amygdala threat from predator event
     active_world_event: str = ""               # current global event label or ""
+    # ── Richer sensor suite ──────────────────────────────────────────────
+    terrain_ahead: list[str] = field(default_factory=list)  # 3-cell north lookahead
+    scent_gradient: float = 0.0               # 0-1 proximity to nearest food
+    body_temp_external: float = 0.0           # 0-1 ambient heat from nearby terrain
+    novel_hazard_active: bool = False         # NOVEL_HAZARD world event flag
+    windfall_active: bool = False             # WINDFALL world event flag
 
     def has_resource_here(self) -> bool:
         """True if the agent is standing on a gatherable resource."""
@@ -313,6 +358,7 @@ class GridWorld:
         allow_respawn: bool = True,
         resource_decay_rate: float = 0.0,
         season_length: int = 50,
+        procedural_terrain: bool = True,
     ) -> None:
         self.width = width
         self.height = height
@@ -330,6 +376,10 @@ class GridWorld:
         # Seasonal dynamics
         self.season_length: int = max(0, season_length)
         self._season_index: int = 0   # index into _SEASONS
+        # Procedural terrain clustering (cellular-automaton growth pass)
+        self._procedural_terrain: bool = procedural_terrain
+        # Dwell-time tracking: counts consecutive ticks agent stays on a hazard cell
+        self._dwell_ticks: int = 0
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -340,6 +390,7 @@ class GridWorld:
         self._season_index = 0
         self._episode += 1
         self._respawn_timers.clear()
+        self._dwell_ticks = 0
         # Re-seed per episode for varied but reproducible layouts
         if self._base_seed is not None:
             self._rng = random.Random(self._base_seed + self._episode)
@@ -368,9 +419,13 @@ class GridWorld:
             candidate = (cx + dx, cy + dy)
             if self._is_valid_move(candidate):
                 self._agent_pos = candidate
+                # Reset dwell counter on successful movement
+                self._dwell_ticks = 0
                 # Passive entry effects for hazards and terrain
                 cell = self._cell_at(self._agent_pos)
                 _merge_delta(metabolic_delta, _ENTRY_EFFECTS.get(cell, {}))
+            # else: bumped into wall — dwell remains unchanged (walls are not
+            # in _DWELL_EFFECTS so the counter will reset to 0 on the next line anyway)
         elif action_value == WorldAction.GATHER.value:
             cell = self._cell_at(self._agent_pos)
             if cell in _GATHERABLE:
@@ -395,7 +450,19 @@ class GridWorld:
                         )
                     )
                 gathered = True
-        # WAIT / BROADCAST / social actions: no movement; metabolic cost charged by caller
+        # WAIT / BROADCAST / social actions: no movement
+
+        # Dwell-time hazard penalty: accumulate extra damage when standing still on hazards.
+        current_cell = self._cell_at(self._agent_pos)
+        if current_cell in _DWELL_EFFECTS:
+            self._dwell_ticks += 1
+            if self._dwell_ticks > 1:
+                # Scale penalty exponentially with consecutive dwell ticks
+                scale = _DWELL_SCALE ** (self._dwell_ticks - 1)
+                for k, v in _DWELL_EFFECTS[current_cell].items():
+                    metabolic_delta[k] = metabolic_delta.get(k, 0.0) + v * scale
+        else:
+            self._dwell_ticks = 0
 
         obs = self._make_observation()
         return WorldStepResult(
@@ -412,6 +479,8 @@ class GridWorld:
         other_agent_positions: list[tuple[int, int]] | None = None,
         predator_threat: float = 0.0,
         active_world_event: str = "",
+        novel_hazard_active: bool = False,
+        windfall_active: bool = False,
     ) -> WorldObservation:
         """Return the current observation without advancing the world.
 
@@ -423,11 +492,17 @@ class GridWorld:
             Current predator threat level from ``WorldEventSystem`` [0, 1].
         active_world_event:
             Label of the current global event (e.g. ``"storm"``) or ``""``.
+        novel_hazard_active:
+            Whether a NOVEL_HAZARD event is currently firing.
+        windfall_active:
+            Whether a WINDFALL event is currently firing.
         """
         return self._make_observation(
             other_agent_positions,
             predator_threat=predator_threat,
             active_world_event=active_world_event,
+            novel_hazard_active=novel_hazard_active,
+            windfall_active=windfall_active,
         )
 
     @property
@@ -555,6 +630,7 @@ class GridWorld:
             CellType.ROCKY.value:     max(2, int(n * 0.04)),
             CellType.RADIATION.value: max(2, int(n * 0.06)),
             CellType.TOXIN.value:     max(2, int(n * 0.05)),
+            CellType.MUD.value:       max(2, int(n * 0.04)),
         }
 
         idx = 0
@@ -563,6 +639,58 @@ class GridWorld:
                 if idx < len(interior):
                     self._grid[interior[idx][1]][interior[idx][0]] = cell_type
                     idx += 1
+
+        # Procedural terrain clustering: one pass of cellular-automaton growth.
+        # Each empty interior cell that has ≥ 2 neighbours of the same terrain
+        # type has a 30% chance of adopting that type, creating natural patches.
+        if self._procedural_terrain:
+            self._cluster_terrain(passes=2, adoption_prob=0.30, min_neighbours=2)
+
+    def _cluster_terrain(
+        self,
+        passes: int = 2,
+        adoption_prob: float = 0.30,
+        min_neighbours: int = 2,
+    ) -> None:
+        """Grow terrain patches by cellular-automaton neighbour diffusion.
+
+        For each pass, iterates over empty interior cells.  If at least
+        ``min_neighbours`` of the 4-directional neighbours share the same
+        clusterable terrain type, the empty cell adopts that type with
+        probability ``adoption_prob``.
+
+        Only terrain that should appear in patches is eligible for spreading;
+        walls and pure hazards (RADIATION, TOXIN) are excluded to keep hazards
+        as isolated danger spots rather than large zones.
+        """
+        _clusterable: frozenset[str] = frozenset({
+            CellType.FOREST.value,
+            CellType.ROCKY.value,
+            CellType.MUD.value,
+        })
+
+        for _ in range(passes):
+            candidates = [
+                (x, y)
+                for x in range(1, self.width - 1)
+                for y in range(1, self.height - 1)
+                if self._grid[y][x] == CellType.EMPTY.value
+            ]
+            self._rng.shuffle(candidates)
+            for x, y in candidates:
+                neighbour_types: dict[str, int] = {}
+                for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                    nc = self._grid[y + dy][x + dx]
+                    if nc in _clusterable:
+                        neighbour_types[nc] = neighbour_types.get(nc, 0) + 1
+                if not neighbour_types:
+                    continue
+                dominant = max(neighbour_types, key=lambda k: neighbour_types[k])
+                if (
+                    neighbour_types[dominant] >= min_neighbours
+                    and self._rng.random() < adoption_prob
+                ):
+                    self._grid[y][x] = dominant
 
     def _random_empty_cell(self) -> tuple[int, int]:
         empties = [
@@ -625,6 +753,8 @@ class GridWorld:
         other_agent_positions: list[tuple[int, int]] | None = None,
         predator_threat: float = 0.0,
         active_world_event: str = "",
+        novel_hazard_active: bool = False,
+        windfall_active: bool = False,
     ) -> WorldObservation:
         x, y = self._agent_pos
         r = self._vision_radius
@@ -657,6 +787,42 @@ class GridWorld:
                     nearby_agents.append(rel)
         social_stress = min(1.0, len(nearby_agents) / 4.0) if nearby_agents else 0.0
 
+        # Dampen predator threat when agent is on MUD (cover mechanic)
+        effective_predator_threat = predator_threat
+        if self._cell_at(self._agent_pos) == CellType.MUD.value:
+            effective_predator_threat = max(0.0, predator_threat - _MUD_PREDATOR_DAMPING)
+
+        # ── Richer sensor suite ──────────────────────────────────────────────
+        # terrain_ahead: 3-cell north lookahead (offsets (0,-1), (0,-2), (0,-3))
+        terrain_ahead = [
+            self._cell_at((x, y - 1)),
+            self._cell_at((x, y - 2)),
+            self._cell_at((x, y - 3)),
+        ]
+
+        # scent_gradient: 1/(1 + min_manhattan_distance_to_food)
+        _food_cells: frozenset[str] = frozenset({CellType.FOOD.value, CellType.FOREST.value})
+        if self._cell_at(self._agent_pos) in _food_cells:
+            scent_gradient = 1.0
+        else:
+            food_dists = [
+                abs(dx) + abs(dy)
+                for (dx, dy), c in visible.items()
+                if c in _food_cells
+            ]
+            scent_gradient = 1.0 / (1.0 + min(food_dists)) if food_dists else 0.0
+
+        # body_temp_external: normalised ambient heat from nearby RADIATION/ROCKY cells.
+        # Each heat-bearing cell contributes 1/(1 + manhattan_distance) to the sum.
+        # Maximum theoretical value is bounded by the number of visible cells.
+        heat_sum = sum(
+            1.0 / (1.0 + abs(dx) + abs(dy))
+            for (dx, dy), c in visible.items()
+            if c in _HEAT_BEARING_CELLS
+        )
+        # Normalise against a soft maximum (~3.0 = very surrounded by hot terrain)
+        body_temp_external = min(1.0, heat_sum / 3.0)
+
         return WorldObservation(
             position=self._agent_pos,
             current_cell=self._cell_at(self._agent_pos),
@@ -667,8 +833,13 @@ class GridWorld:
             hazard_density=hazard_density,
             nearby_agents=nearby_agents,
             social_stress=social_stress,
-            predator_threat=predator_threat,
+            predator_threat=effective_predator_threat,
             active_world_event=active_world_event,
+            terrain_ahead=terrain_ahead,
+            scent_gradient=scent_gradient,
+            body_temp_external=body_temp_external,
+            novel_hazard_active=novel_hazard_active,
+            windfall_active=windfall_active,
         )
 
 
@@ -690,6 +861,29 @@ _DROUGHT_RESPAWN_MULTIPLIER: float = 3.0
 _DROUGHT_MIN_DURATION: int = 20
 _DROUGHT_MAX_DURATION: int = 50
 
+# Novel Hazard parameters
+# A rare, high-chaos event requiring plastic (Dreamer/Courier) response.
+# Guardian-mode agents take extra damage; ~1 per 200 ticks.
+_NOVEL_HAZARD_PROB: float = 0.005        # per-tick probability
+_NOVEL_HAZARD_MIN_DURATION: int = 5
+_NOVEL_HAZARD_MAX_DURATION: int = 15
+# Extra penalty for Guardian/SalienceNet agents during the event (applied by caller)
+_NOVEL_HAZARD_GUARDIAN_HEAT: float = 10.0
+_NOVEL_HAZARD_GUARDIAN_WASTE: float = 6.0
+
+# Windfall parameters
+# A rare resource surge only exploitable by plastic (Dreamer/Courier) agents.
+# ~1 per 500 ticks.
+_WINDFALL_PROB: float = 0.002            # per-tick probability
+_WINDFALL_MIN_DURATION: int = 5
+_WINDFALL_MAX_DURATION: int = 10
+# Bonus metabolic reward for Dreamer/Courier agents during windfall (applied by caller)
+_WINDFALL_ENERGY_BONUS: float = 20.0
+
+# Mask classification for novel-hazard / windfall mechanics (mirrors CollapseProbe)
+_GUARDIAN_MODE_MASKS: frozenset[str] = frozenset({"Guardian", "SalienceNet"})
+_PLASTIC_MODE_MASKS: frozenset[str] = frozenset({"Dreamer", "Courier", "DefaultMode"})
+
 
 @dataclass
 class WorldEvent:
@@ -698,7 +892,8 @@ class WorldEvent:
     Attributes
     ----------
     label:
-        Short identifier (``"storm"``, ``"drought"``, ``"predator"``, or ``""``).
+        Short identifier (``"storm"``, ``"drought"``, ``"predator"``,
+        ``"novel_hazard"``, ``"windfall"``, or ``""``).
     storm_hit:
         When True, each agent should receive ``delta_heat=_STORM_HEAT_HIT``
         and ``delta_waste=_STORM_WASTE_HIT``.
@@ -706,20 +901,32 @@ class WorldEvent:
         Normalised predator threat level [0, 1] for this tick.
     drought_active:
         Whether a drought is currently suppressing resource respawn.
+    novel_hazard_active:
+        When True, Guardian-mode agents should apply the novel-hazard penalty
+        (``delta_heat=_NOVEL_HAZARD_GUARDIAN_HEAT, delta_waste=_NOVEL_HAZARD_GUARDIAN_WASTE``).
+        Plastic-mode agents (Dreamer/Courier) can navigate this event without
+        additional cost.
+    windfall_active:
+        When True, plastic-mode agents (Dreamer/Courier/DefaultMode) should
+        receive a resource bonus (``delta_energy=_WINDFALL_ENERGY_BONUS``).
+        Guardian-mode agents miss the windfall — their conservative strategy
+        cannot adapt quickly enough.
     """
 
     label: str = ""
     storm_hit: bool = False
     predator_threat: float = 0.0
     drought_active: bool = False
+    novel_hazard_active: bool = False
+    windfall_active: bool = False
 
 
 class WorldEventSystem:
     """Global stochastic event generator for shared GridWorld environments.
 
-    Fires storms, droughts, and predator events that affect all agents
-    simultaneously, forcing coordinated adaptation rather than independent
-    optimisation.
+    Fires storms, droughts, predator events, novel hazards, and windfall
+    events that affect all agents simultaneously, forcing coordinated
+    adaptation rather than independent optimisation.
 
     Parameters
     ----------
@@ -729,6 +936,13 @@ class WorldEventSystem:
         Per-tick probability of a predator appearing (default 0.015).
     drought_prob:
         Per-tick probability of a drought beginning (default 0.01).
+    novel_hazard_prob:
+        Per-tick probability of a NOVEL_HAZARD event beginning (~1/200 ticks,
+        default 0.005).  Guardian-mode agents take extra damage; plastic agents
+        are unaffected.
+    windfall_prob:
+        Per-tick probability of a WINDFALL event beginning (~1/500 ticks,
+        default 0.002).  Only plastic-mode agents receive the energy bonus.
     seed:
         RNG seed for reproducibility.
 
@@ -743,6 +957,21 @@ class WorldEventSystem:
                         delta_heat=_STORM_HEAT_HIT,
                         delta_waste=_STORM_WASTE_HIT,
                     )
+            # Apply novel-hazard penalty to Guardian-mode agents
+            if world_event.novel_hazard_active:
+                for agent in agents:
+                    if agent.mask in _GUARDIAN_MODE_MASKS:
+                        agent.state.apply_action_feedback(
+                            delta_heat=_NOVEL_HAZARD_GUARDIAN_HEAT,
+                            delta_waste=_NOVEL_HAZARD_GUARDIAN_WASTE,
+                        )
+            # Reward plastic agents during windfall
+            if world_event.windfall_active:
+                for agent in agents:
+                    if agent.mask in _PLASTIC_MODE_MASKS:
+                        agent.state.apply_action_feedback(
+                            delta_energy=_WINDFALL_ENERGY_BONUS,
+                        )
     """
 
     def __init__(
@@ -750,11 +979,15 @@ class WorldEventSystem:
         storm_prob: float = 0.02,
         predator_prob: float = 0.015,
         drought_prob: float = 0.01,
+        novel_hazard_prob: float = _NOVEL_HAZARD_PROB,
+        windfall_prob: float = _WINDFALL_PROB,
         seed: int | None = None,
     ) -> None:
         self.storm_prob = storm_prob
         self.predator_prob = predator_prob
         self.drought_prob = drought_prob
+        self.novel_hazard_prob = novel_hazard_prob
+        self.windfall_prob = windfall_prob
         self._rng = random.Random(seed)
 
         # Predator state
@@ -764,6 +997,14 @@ class WorldEventSystem:
         # Drought state
         self._drought_active: bool = False
         self._drought_ticks_remaining: int = 0
+
+        # Novel hazard state
+        self._novel_hazard_active: bool = False
+        self._novel_hazard_ticks_remaining: int = 0
+
+        # Windfall state
+        self._windfall_active: bool = False
+        self._windfall_ticks_remaining: int = 0
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -776,6 +1017,16 @@ class WorldEventSystem:
     def predator_active(self) -> bool:
         """True if a predator event is ongoing."""
         return self._predator_active
+
+    @property
+    def novel_hazard_active(self) -> bool:
+        """True if a NOVEL_HAZARD event is ongoing."""
+        return self._novel_hazard_active
+
+    @property
+    def windfall_active(self) -> bool:
+        """True if a WINDFALL event is ongoing."""
+        return self._windfall_active
 
     def tick(self, world_tick: int = 0) -> WorldEvent:  # noqa: ARG002
         """Advance the event system by one tick and return the current event.
@@ -815,6 +1066,28 @@ class WorldEventSystem:
                 _DROUGHT_MIN_DURATION, _DROUGHT_MAX_DURATION
             )
 
+        # ── Novel Hazard ──────────────────────────────────────────────────
+        if self._novel_hazard_active:
+            self._novel_hazard_ticks_remaining -= 1
+            if self._novel_hazard_ticks_remaining <= 0:
+                self._novel_hazard_active = False
+        elif self._rng.random() < self.novel_hazard_prob:
+            self._novel_hazard_active = True
+            self._novel_hazard_ticks_remaining = self._rng.randint(
+                _NOVEL_HAZARD_MIN_DURATION, _NOVEL_HAZARD_MAX_DURATION
+            )
+
+        # ── Windfall ─────────────────────────────────────────────────────
+        if self._windfall_active:
+            self._windfall_ticks_remaining -= 1
+            if self._windfall_ticks_remaining <= 0:
+                self._windfall_active = False
+        elif self._rng.random() < self.windfall_prob:
+            self._windfall_active = True
+            self._windfall_ticks_remaining = self._rng.randint(
+                _WINDFALL_MIN_DURATION, _WINDFALL_MAX_DURATION
+            )
+
         # ── Compose event label ───────────────────────────────────────────
         labels = []
         if storm_hit:
@@ -823,6 +1096,10 @@ class WorldEventSystem:
             labels.append("predator")
         if self._drought_active:
             labels.append("drought")
+        if self._novel_hazard_active:
+            labels.append("novel_hazard")
+        if self._windfall_active:
+            labels.append("windfall")
         label = "+".join(labels)
 
         return WorldEvent(
@@ -830,7 +1107,51 @@ class WorldEventSystem:
             storm_hit=storm_hit,
             predator_threat=_PREDATOR_THREAT_LEVEL if self._predator_active else 0.0,
             drought_active=self._drought_active,
+            novel_hazard_active=self._novel_hazard_active,
+            windfall_active=self._windfall_active,
         )
+
+    def apply_to_agent(
+        self,
+        agent_state: object,
+        world_event: WorldEvent,
+        mask_name: str = "",
+    ) -> None:
+        """Apply event effects to a single agent's metabolic state.
+
+        This is a convenience helper for callers that want a single dispatch
+        point rather than checking each event flag manually.
+
+        Parameters
+        ----------
+        agent_state:
+            Any object with an ``apply_action_feedback(**kwargs)`` method
+            (typically ``MetabolicState``).
+        world_event:
+            The ``WorldEvent`` returned by ``tick()`` for the current tick.
+        mask_name:
+            The agent's currently active personality mask name (e.g.
+            ``"Guardian"``, ``"Dreamer"``).  Used to gate mask-dependent
+            novel-hazard and windfall effects.
+        """
+        if world_event.storm_hit:
+            agent_state.apply_action_feedback(  # type: ignore[union-attr]
+                delta_heat=_STORM_HEAT_HIT,
+                delta_waste=_STORM_WASTE_HIT,
+            )
+
+        if world_event.novel_hazard_active and mask_name in _GUARDIAN_MODE_MASKS:
+            # Guardian-mode agents are unprepared for novel threats
+            agent_state.apply_action_feedback(  # type: ignore[union-attr]
+                delta_heat=_NOVEL_HAZARD_GUARDIAN_HEAT,
+                delta_waste=_NOVEL_HAZARD_GUARDIAN_WASTE,
+            )
+
+        if world_event.windfall_active and mask_name in _PLASTIC_MODE_MASKS:
+            # Plastic agents seize the rare resource surge
+            agent_state.apply_action_feedback(  # type: ignore[union-attr]
+                delta_energy=_WINDFALL_ENERGY_BONUS,
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

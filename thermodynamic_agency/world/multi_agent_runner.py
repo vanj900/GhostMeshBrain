@@ -154,6 +154,18 @@ class ReputationSystem:
         """Record a betrayal, lowering the agent's trust score."""
         self._scores[agent_id] = max(0.0, self._scores[agent_id] - 0.20)
 
+    def decay(self, amount: float = 0.01) -> None:
+        """Apply per-tick reputation decay so relationships evolve over time.
+
+        Parameters
+        ----------
+        amount:
+            Fraction to subtract from each score per tick (default −0.01/tick).
+            Scores are floored at 0.0.
+        """
+        for aid in self._scores:
+            self._scores[aid] = max(0.0, self._scores[aid] - amount)
+
     def score(self, agent_id: int) -> float:
         """Return the current trust score for *agent_id* (0–1)."""
         return self._scores.get(agent_id, 0.5)
@@ -161,6 +173,74 @@ class ReputationSystem:
     def all_scores(self) -> dict[int, float]:
         """Return a copy of all trust scores."""
         return dict(self._scores)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Alliance Tracker
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Mutual reputation thresholds for alliance / war state formation
+_ALLIANCE_REP_THRESHOLD: float = 0.7   # both agents must exceed this for an alliance
+_WAR_REP_THRESHOLD: float = 0.3        # both agents must be below this for war state
+_BETRAY_WAR_BONUS_ENERGY: float = 4.0  # extra energy stolen from victim during war
+
+
+class AllianceTracker:
+    """Tracks alliance and war states between pairs of agents.
+
+    Alliance state (mutual rep > 0.7): agents split gathered resources fairly
+    when on the same cell; COOPERATE actions are prioritised.
+
+    War state (mutual rep < 0.3): BETRAY actions receive a bonus
+    (extra energy stolen); COOPERATE is blocked between at-war agents.
+
+    State is recomputed each tick after reputation decay is applied.
+
+    Parameters
+    ----------
+    n_agents:
+        Number of agents to track.
+    """
+
+    def __init__(self, n_agents: int) -> None:
+        self._n = n_agents
+        self._alliances: set[frozenset[int]] = set()
+        self._wars: set[frozenset[int]] = set()
+
+    def update(self, reputation: ReputationSystem) -> None:
+        """Recompute alliance/war state from current reputation scores.
+
+        Alliance requires both agents to have a score exceeding the threshold
+        (i.e. both are individually trusted by the group).  War requires both
+        to be below the war threshold.
+        """
+        self._alliances = set()
+        self._wars = set()
+        for i in range(self._n):
+            for j in range(i + 1, self._n):
+                pair: frozenset[int] = frozenset({i, j})
+                si = reputation.score(i)
+                sj = reputation.score(j)
+                if si > _ALLIANCE_REP_THRESHOLD and sj > _ALLIANCE_REP_THRESHOLD:
+                    self._alliances.add(pair)
+                elif si < _WAR_REP_THRESHOLD and sj < _WAR_REP_THRESHOLD:
+                    self._wars.add(pair)
+
+    def are_allied(self, a: int, b: int) -> bool:
+        """Return True if agents *a* and *b* are currently in an alliance."""
+        return frozenset({a, b}) in self._alliances
+
+    def are_at_war(self, a: int, b: int) -> bool:
+        """Return True if agents *a* and *b* are currently in a war state."""
+        return frozenset({a, b}) in self._wars
+
+    def all_alliances(self) -> list[frozenset[int]]:
+        """Return all current alliance pairs."""
+        return list(self._alliances)
+
+    def all_wars(self) -> list[frozenset[int]]:
+        """Return all current war pairs."""
+        return list(self._wars)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,6 +360,8 @@ class MultiAgentRunner:
 
         # Reputation system (shared social memory)
         self._reputation = ReputationSystem(n_agents=n_agents)
+        # Alliance tracker — recomputed each tick after reputation decay
+        self._alliance_tracker = AllianceTracker(n_agents=n_agents)
 
         self._agents: list[_AgentState] = []
 
@@ -318,6 +400,7 @@ class MultiAgentRunner:
         """Initialise the arena and spawn all agents."""
         self._arena.reset()
         self._reputation = ReputationSystem(n_agents=self.n_agents)
+        self._alliance_tracker = AllianceTracker(n_agents=self.n_agents)
         self._agents = []
 
         for i in range(self.n_agents):
@@ -374,6 +457,10 @@ class MultiAgentRunner:
         if self.respawn:
             self._arena._advance_respawn_timers()
 
+        # Reputation decay and alliance update (every tick)
+        self._reputation.decay(amount=0.01)
+        self._alliance_tracker.update(self._reputation)
+
         # Fire global world event (storms, droughts, predators)
         world_event = self._events.tick(tick)
 
@@ -384,6 +471,32 @@ class MultiAgentRunner:
                     agent.mesh.state.apply_action_feedback(
                         delta_heat=_STORM_HEAT_HIT,
                         delta_waste=_STORM_WASTE_HIT,
+                    )
+
+        # Apply novel-hazard penalty to Guardian-mode agents
+        if world_event.novel_hazard_active:
+            from thermodynamic_agency.world.grid_world import (
+                _NOVEL_HAZARD_GUARDIAN_HEAT,
+                _NOVEL_HAZARD_GUARDIAN_WASTE,
+                _GUARDIAN_MODE_MASKS,
+            )
+            for agent in self._agents:
+                if agent.alive and agent.mesh.rotator.active.name in _GUARDIAN_MODE_MASKS:
+                    agent.mesh.state.apply_action_feedback(
+                        delta_heat=_NOVEL_HAZARD_GUARDIAN_HEAT,
+                        delta_waste=_NOVEL_HAZARD_GUARDIAN_WASTE,
+                    )
+
+        # Apply windfall bonus to plastic-mode agents
+        if world_event.windfall_active:
+            from thermodynamic_agency.world.grid_world import (
+                _WINDFALL_ENERGY_BONUS,
+                _PLASTIC_MODE_MASKS,
+            )
+            for agent in self._agents:
+                if agent.alive and agent.mesh.rotator.active.name in _PLASTIC_MODE_MASKS:
+                    agent.mesh.state.apply_action_feedback(
+                        delta_energy=_WINDFALL_ENERGY_BONUS,
                     )
 
         # Determine intended actions for all agents (simultaneous intention)
@@ -475,28 +588,44 @@ class MultiAgentRunner:
             vitals_after = agent.mesh.state.to_dict()
 
         elif action_str == WorldAction.COOPERATE.value:
-            # Share energy with all nearby living agents
+            # Share energy with all nearby living agents.
+            # BLOCKED between agents in war state.
             nearby = self._nearby_agents(agent)
-            agent.mesh.state.apply_action_feedback(
-                delta_energy=-COOPERATE_SENDER_COST,
-            )
-            for other in nearby:
-                other.mesh.state.apply_action_feedback(
-                    delta_energy=COOPERATE_RECEIVER_GAIN,
+            # Filter out agents at war with this agent
+            cooperate_targets = [
+                o for o in nearby
+                if not self._alliance_tracker.are_at_war(agent.agent_id, o.agent_id)
+            ]
+            if cooperate_targets:
+                agent.mesh.state.apply_action_feedback(
+                    delta_energy=-COOPERATE_SENDER_COST,
                 )
-            self._reputation.cooperated(agent.agent_id)
-            agent.cooperations += 1
+                for other in cooperate_targets:
+                    # Allied agents receive a larger share
+                    bonus = 1.5 if self._alliance_tracker.are_allied(
+                        agent.agent_id, other.agent_id
+                    ) else 1.0
+                    other.mesh.state.apply_action_feedback(
+                        delta_energy=COOPERATE_RECEIVER_GAIN * bonus,
+                    )
+                self._reputation.cooperated(agent.agent_id)
+                agent.cooperations += 1
             vitals_after = agent.mesh.state.to_dict()
 
         elif action_str == WorldAction.BETRAY.value:
-            # Steal energy from the nearest visible agent
+            # Steal energy from the nearest visible agent.
+            # War state: BETRAY gets a bonus.
             nearest = self._nearest_agent(agent)
             if nearest is not None:
+                at_war = self._alliance_tracker.are_at_war(
+                    agent.agent_id, nearest.agent_id
+                )
+                bonus_energy = _BETRAY_WAR_BONUS_ENERGY if at_war else 0.0
                 nearest.mesh.state.apply_action_feedback(
-                    delta_energy=-BETRAY_VICTIM_COST,
+                    delta_energy=-(BETRAY_VICTIM_COST + bonus_energy),
                 )
                 agent.mesh.state.apply_action_feedback(
-                    delta_energy=BETRAY_ACTOR_GAIN,
+                    delta_energy=BETRAY_ACTOR_GAIN + bonus_energy,
                 )
                 self._reputation.betrayed(agent.agent_id)
                 agent.betrayals += 1
@@ -624,10 +753,14 @@ class MultiAgentRunner:
         self._arena._agent_pos = agent.pos
         predator_threat = world_event.predator_threat if world_event else 0.0
         active_event = world_event.label if world_event else ""
+        novel_hazard_active = world_event.novel_hazard_active if world_event else False
+        windfall_active = world_event.windfall_active if world_event else False
         next_obs = self._arena.get_observation(
             other_agent_positions=other_positions,
             predator_threat=predator_threat,
             active_world_event=active_event,
+            novel_hazard_active=novel_hazard_active,
+            windfall_active=windfall_active,
         )
         agent.obs = next_obs
 

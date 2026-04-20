@@ -204,8 +204,11 @@ class LineageTracker:
                 q_value = float(entry.get("q_value", 0.0))
                 if state_key_raw is None or action is None:
                     continue
-                # Reconstruct state_key as tuple (was serialised as list)
+        # Reconstructed state_key: lists are re-converted to tuples for Q-table
+        # key compatibility; all other types (strings, tuples) pass through.
                 state_key = tuple(state_key_raw) if isinstance(state_key_raw, list) else state_key_raw
+                if not isinstance(state_key, (str, tuple)):
+                    continue
                 # Apply prior boost + Gaussian mutation noise
                 noise = _rng.gauss(0.0, self._mutation_rate)
                 boosted = (q_value + Q_PRIOR_BOOST) * (1.0 + noise)

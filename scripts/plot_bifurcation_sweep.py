@@ -89,14 +89,14 @@ def plot_sweep(csv_path: Path, output_dir: Path) -> None:
         xs = [r["lifespan"] for r in config_rows]
         ys = [r["plasticity_index"] for r in config_rows]
         ax_a.scatter(xs, ys, label=config_id, alpha=0.7, s=60, color=colour)
+    # Add threshold lines before legend so they appear in the legend
+    ax_a.axhline(0.5, color="green", linestyle="--", alpha=0.5, label="Plastic threshold (0.5)")
+    ax_a.axhline(0.3, color="red", linestyle="--", alpha=0.5, label="Guardian threshold (0.3)")
     ax_a.set_xlabel("Lifespan (ticks)", fontsize=12)
     ax_a.set_ylabel("Plasticity Index (dreamer / (guardian + ε))", fontsize=12)
     ax_a.set_title("Plasticity Index vs Lifespan by Parameter Configuration", fontsize=13)
     ax_a.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, ncol=2)
     ax_a.grid(alpha=0.3)
-    # Add threshold lines
-    ax_a.axhline(0.5, color="green", linestyle="--", alpha=0.5, label="Plastic threshold (0.5)")
-    ax_a.axhline(0.3, color="red", linestyle="--", alpha=0.5, label="Guardian threshold (0.3)")
     fig_a.tight_layout()
     path_a = output_dir / "bifurcation_plasticity_vs_lifespan.png"
     fig_a.savefig(path_a, dpi=120)

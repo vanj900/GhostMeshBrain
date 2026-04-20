@@ -198,7 +198,7 @@ class BifurcationExperiment:
             "GHOST_VITALS_LOG": "",
             "GHOST_LOG_FILE": "",
             "GHOST_ENV_EVENTS": "1",
-            "GHOST_USE_LLM": "0" if llm_usage_freq == "off" else "0",
+            "GHOST_USE_LLM": "1" if llm_usage_freq == "low" else "0",
             "GHOST_PURITY_MODE": "0",
             # precision_bound is not a direct env var; we set it via the
             # precision engine's base_precision after construction

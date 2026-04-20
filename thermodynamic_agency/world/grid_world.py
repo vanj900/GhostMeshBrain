@@ -424,7 +424,8 @@ class GridWorld:
                 # Passive entry effects for hazards and terrain
                 cell = self._cell_at(self._agent_pos)
                 _merge_delta(metabolic_delta, _ENTRY_EFFECTS.get(cell, {}))
-            # else: bumped into wall — dwell still increments below
+            # else: bumped into wall — dwell remains unchanged (walls are not
+            # in _DWELL_EFFECTS so the counter will reset to 0 on the next line anyway)
         elif action_value == WorldAction.GATHER.value:
             cell = self._cell_at(self._agent_pos)
             if cell in _GATHERABLE:

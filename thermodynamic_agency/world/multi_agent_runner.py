@@ -208,7 +208,12 @@ class AllianceTracker:
         self._wars: set[frozenset[int]] = set()
 
     def update(self, reputation: ReputationSystem) -> None:
-        """Recompute alliance/war state from current reputation scores."""
+        """Recompute alliance/war state from current reputation scores.
+
+        Alliance requires both agents to have a score exceeding the threshold
+        (i.e. both are individually trusted by the group).  War requires both
+        to be below the war threshold.
+        """
         self._alliances = set()
         self._wars = set()
         for i in range(self._n):

@@ -244,7 +244,7 @@ def _run_http(vitals_path: str, port: int = 8765) -> None:
 
     server = HTTPServer(("", port), VitalsHandler)
     print(f"[GhostMesh Dashboard] Serving at http://localhost:{port}/")
-    print("  Open in browser or run: curl http://localhost:{port}/vitals")
+    print(f"  Open in browser or run: curl http://localhost:{port}/vitals")
     print("  Press Ctrl+C to stop.")
     try:
         server.serve_forever()

@@ -1,6 +1,6 @@
 """GridWorld — a 2-D environment for embodied GhostMesh.
 
-A 10×10 (or larger) grid containing resources, terrain types, and hazards
+A 30×30 (configurable) grid containing resources, terrain types, and hazards
 behind wall obstacles.  The agent navigates, gathers resources, and avoids
 hazards.  Resources respawn after a configurable number of ticks.
 
@@ -324,7 +324,7 @@ class GridWorld:
     Parameters
     ----------
     width, height:
-        Grid dimensions (default 10×10).
+        Grid dimensions (default 30×30).
     seed:
         Optional RNG seed for reproducible layouts.  Each call to ``reset()``
         generates a fresh random layout using this seed base + episode count.
@@ -350,8 +350,8 @@ class GridWorld:
 
     def __init__(
         self,
-        width: int = 10,
-        height: int = 10,
+        width: int = 30,
+        height: int = 30,
         seed: int | None = None,
         wall_density: float = 0.05,
         vision_radius: int = 2,

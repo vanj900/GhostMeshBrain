@@ -165,6 +165,72 @@ class LineageTracker:
         """
         return [lin.dreamer_fraction for lin in self._lineages]
 
+    def lineage_fitness(
+        self,
+        lifespan_weight: float = 0.6,
+        dreamer_weight: float = 0.4,
+    ) -> list[float]:
+        """Return a per-generation composite fitness score.
+
+        The fitness proxy combines lifespan (normalised by the maximum observed
+        lifespan across the lineage) and dreamer_fraction (the primary
+        plasticity signal).  Weights are configurable so callers can emphasise
+        survival vs. plasticity when comparing lineage strategies.
+
+        Parameters
+        ----------
+        lifespan_weight:
+            Weight applied to the normalised lifespan component (default 0.6).
+        dreamer_weight:
+            Weight applied to the dreamer_fraction component (default 0.4).
+
+        Returns
+        -------
+        list[float]
+            Fitness scores in chronological generation order.  Returns an
+            empty list when fewer than two generations have been recorded.
+        """
+        if not self._lineages:
+            return []
+        lifespans = [lin.lifespan for lin in self._lineages]
+        _max_ls = max(lifespans)
+        max_lifespan = _max_ls if _max_ls > 0 else 1
+        scores: list[float] = []
+        for lin in self._lineages:
+            norm_lifespan = lin.lifespan / max_lifespan
+            score = lifespan_weight * norm_lifespan + dreamer_weight * lin.dreamer_fraction
+            scores.append(round(score, 6))
+        return scores
+
+    def plasticity_selection_signal(self) -> float:
+        """Pearson correlation between dreamer_fraction[t] and lifespan[t+1].
+
+        Measures whether high plasticity in one generation predicts longer
+        survival in the next — the key cross-generational selection signal.
+
+        Returns
+        -------
+        float
+            Pearson r in [-1, 1].  Positive values mean plastic parents tend
+            to have longer-lived offspring.  Returns 0.0 when fewer than three
+            paired observations are available (too few for meaningful statistics).
+        """
+        if len(self._lineages) < 3:
+            return 0.0
+        # Build paired (dreamer_fraction[t], lifespan[t+1]) arrays
+        xs = [lin.dreamer_fraction for lin in self._lineages[:-1]]
+        ys = [lin.lifespan for lin in self._lineages[1:]]
+        n = len(xs)
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+        var_x = sum((x - mean_x) ** 2 for x in xs)
+        var_y = sum((y - mean_y) ** 2 for y in ys)
+        denom = math.sqrt(var_x * var_y)
+        if denom == 0.0:
+            return 0.0
+        return round(cov / denom, 6)
+
     def seed_q_table(
         self,
         q_table: dict,

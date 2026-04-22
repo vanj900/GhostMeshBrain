@@ -231,13 +231,13 @@ class TestGridWorldHeightmap:
         w2 = GridWorld(seed=99)
         assert w1._heightmap == w2._heightmap
 
-    def test_heightmap_differs_across_episodes(self):
+    def test_heightmap_stable_across_episodes(self):
         world = GridWorld(seed=5)
         hm1 = [row[:] for row in world._heightmap]
         world.reset()
         hm2 = [row[:] for row in world._heightmap]
-        # Different episodes → different maps (extremely unlikely to be identical)
-        assert hm1 != hm2
+        # Layout is persistent — heightmap must be identical across resets.
+        assert hm1 == hm2
 
 
 class TestSenseRaw:

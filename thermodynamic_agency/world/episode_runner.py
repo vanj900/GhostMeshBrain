@@ -136,7 +136,7 @@ class EpisodeRunner:
     seed:
         Master RNG seed; world and agent seeds are derived from this.
     world_width, world_height:
-        Grid dimensions (default 10×10).
+        Grid dimensions (default 30×30).
     alpha, gamma, epsilon:
         Q-learning hyperparameters.
     """
@@ -146,8 +146,8 @@ class EpisodeRunner:
         n_episodes: int = 30,
         ticks_per_episode: int = 150,
         seed: int | None = None,
-        world_width: int = 10,
-        world_height: int = 10,
+        world_width: int = 30,
+        world_height: int = 30,
         alpha: float = 0.15,
         gamma: float = 0.95,
         epsilon: float = 0.40,

@@ -155,6 +155,9 @@ class EpisodeRunner:
         epsilon_decay: float = 0.97,
         g_eval_interval: int = 10,
         g_bonus_weight: float = 0.05,
+        obs_encoding: str = "id",
+        ray_count: int = 16,
+        ray_range: int = 6,
     ) -> None:
         self.n_episodes = n_episodes
         self.ticks_per_episode = ticks_per_episode
@@ -165,6 +168,9 @@ class EpisodeRunner:
             width=world_width,
             height=world_height,
             seed=seed,
+            obs_encoding=obs_encoding,
+            ray_count=ray_count,
+            ray_range=ray_range,
         )
         self.learner = QLearner(
             alpha=alpha,

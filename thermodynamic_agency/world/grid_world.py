@@ -57,10 +57,21 @@ Usage
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, Optional
+
+from thermodynamic_agency.world.observation import (
+    HitType,
+    RayHit,
+    RawObservation,
+    ObservationVector,
+    encode_id,
+    encode_onehot,
+    ray_directions,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +208,11 @@ _SEASON_AFFECTED_CELLS: frozenset[str] = frozenset(
 _SCARCITY_SCALING_FACTOR: float = 8.0
 # Normalises the resource_decay_rate × world_tick product into [0, 1] range.
 _DECAY_PRESSURE_SCALING: float = 0.1
+
+# Ray occlusion: a cell is treated as an impassable ridge (blocks further rays)
+# when its height exceeds the agent's height by more than this threshold.
+# A value of 2 means a 3-level height jump creates a solid occlusion boundary.
+_RIDGE_OCCLUSION_THRESHOLD: int = 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,6 +375,9 @@ class GridWorld:
         resource_decay_rate: float = 0.0,
         season_length: int = 50,
         procedural_terrain: bool = True,
+        obs_encoding: Literal["id", "onehot"] = "id",
+        ray_count: int = 16,
+        ray_range: int = 6,
     ) -> None:
         self.width = width
         self.height = height
@@ -380,6 +399,16 @@ class GridWorld:
         self._procedural_terrain: bool = procedural_terrain
         # Dwell-time tracking: counts consecutive ticks agent stays on a hazard cell
         self._dwell_ticks: int = 0
+        # ── 2.5D observation system ──────────────────────────────────────────
+        if obs_encoding not in ("id", "onehot"):
+            raise ValueError(
+                f"obs_encoding must be 'id' or 'onehot', got {obs_encoding!r}"
+            )
+        self.obs_encoding: Literal["id", "onehot"] = obs_encoding
+        self.ray_count: int = max(1, ray_count)
+        self.ray_range: int = max(1, ray_range)
+        # Heightmap: generated (or re-generated) on each reset()
+        self._heightmap: list[list[int]] = []
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -395,6 +424,7 @@ class GridWorld:
         if self._base_seed is not None:
             self._rng = random.Random(self._base_seed + self._episode)
         self._generate_grid()
+        self._generate_heightmap()
         self._agent_pos = self._random_empty_cell()
         return self._make_observation()
 
@@ -700,6 +730,192 @@ class GridWorld:
             if self._grid[y][x] == CellType.EMPTY.value
         ]
         return self._rng.choice(empties) if empties else (1, 1)
+
+    def _generate_heightmap(self) -> None:
+        """Generate a reproducible 2.5D heightmap for the current episode.
+
+        Heights are integers in [0, 7].  The map is seeded deterministically
+        from ``_base_seed + episode`` (same RNG state as the grid layout so
+        the two are always in sync).  A simple two-octave noise approach
+        divides the grid into coarse zones and adds a fine-grained perturbation.
+        Wall cells are forced to height 7 (impassable ridge).
+        """
+        # Coarse grid: divide the world into 3×3 macro-zones
+        zone_h = max(1, self.height // 3)
+        zone_w = max(1, self.width // 3)
+
+        # Sample a random height for each macro-zone
+        zones: list[list[int]] = []
+        n_zones_y = (self.height + zone_h - 1) // zone_h
+        n_zones_x = (self.width + zone_w - 1) // zone_w
+        for _ in range(n_zones_y):
+            row = [self._rng.randint(0, 5) for _ in range(n_zones_x)]
+            zones.append(row)
+
+        # Build the heightmap by bilinear interpolation + fine noise
+        self._heightmap = []
+        for y in range(self.height):
+            row = []
+            zy = min(y // zone_h, n_zones_y - 1)
+            for x in range(self.width):
+                zx = min(x // zone_w, n_zones_x - 1)
+                base = zones[zy][zx]
+                noise = self._rng.randint(-1, 1)
+                h = max(0, min(7, base + noise))
+                # Wall cells become impassable ridges
+                if self._grid[y][x] == CellType.WALL.value:
+                    h = 7
+                row.append(h)
+            self._heightmap.append(row)
+
+    def _height_at(self, pos: tuple[int, int]) -> int:
+        """Return the height at ``pos``, clamped to grid bounds."""
+        x, y = pos
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self._heightmap[y][x]
+        return 7  # out-of-bounds treated as maximum height (wall)
+
+    # ── 2.5D raw sensing ─────────────────────────────────────────────────────
+
+    def sense_raw(
+        self,
+        agent_pos: tuple[int, int] | None = None,
+        other_agent_positions: list[tuple[int, int]] | None = None,
+    ) -> RawObservation:
+        """Cast rays from the agent position and return a :class:`RawObservation`.
+
+        Parameters
+        ----------
+        agent_pos:
+            Override the current ``_agent_pos`` (useful in multi-agent
+            contexts where the arena is shared).  If ``None``, the world's
+            own ``_agent_pos`` is used.
+        other_agent_positions:
+            Absolute positions of other living agents so their cells can be
+            classified as ``HitType.AGENT`` when a ray reaches them.
+
+        Returns
+        -------
+        RawObservation
+            ``ray_count`` :class:`RayHit` objects plus a proprioceptive
+            vector ``[height_here, local_ambient_temp, local_waste_field]``.
+        """
+        pos = agent_pos if agent_pos is not None else self._agent_pos
+        x0, y0 = pos
+        height_here = self._height_at(pos)
+
+        # Set of other-agent positions for fast lookup
+        agent_set: frozenset[tuple[int, int]] = (
+            frozenset(other_agent_positions) if other_agent_positions else frozenset()
+        )
+
+        # Cell categories → HitType
+        _resource_cells: frozenset[str] = frozenset({
+            CellType.FOOD.value, CellType.WATER.value, CellType.MEDICINE.value,
+            CellType.FOREST.value, CellType.ROCKY.value,
+        })
+        _hazard_cells: frozenset[str] = frozenset({
+            CellType.RADIATION.value, CellType.TOXIN.value,
+        })
+        _shelter_cells: frozenset[str] = frozenset({
+            CellType.MUD.value,  # mud provides cover (shelter mechanic)
+        })
+
+        directions = ray_directions(self.ray_count)
+        rays: list[RayHit] = []
+
+        for dx_f, dy_f in directions:
+            hit: RayHit | None = None
+            for step in range(1, self.ray_range + 1):
+                cx = int(round(x0 + dx_f * step))
+                cy = int(round(y0 + dy_f * step))
+                cell_pos = (cx, cy)
+                cell = self._cell_at(cell_pos)
+                h = self._height_at(cell_pos)
+                dh = h - height_here
+
+                # Occlusion: ray stops when it hits a ridge taller than the threshold
+                ridge_blocked = dh > _RIDGE_OCCLUSION_THRESHOLD
+
+                if cell == CellType.WALL.value or ridge_blocked:
+                    hit = RayHit(hit_type=HitType.WALL, dist=step, dh=dh)
+                    break
+
+                if cell_pos in agent_set:
+                    hit = RayHit(hit_type=HitType.AGENT, dist=step, dh=dh)
+                    break
+
+                if cell in _resource_cells:
+                    hit = RayHit(hit_type=HitType.RESOURCE, dist=step, dh=dh)
+                    break
+
+                if cell in _hazard_cells:
+                    hit = RayHit(hit_type=HitType.HAZARD, dist=step, dh=dh)
+                    break
+
+                if cell in _shelter_cells:
+                    hit = RayHit(hit_type=HitType.SHELTER, dist=step, dh=dh)
+                    break
+
+            if hit is None:
+                # Ray completed with no hit
+                hit = RayHit(hit_type=HitType.NONE, dist=self.ray_range, dh=0)
+
+            rays.append(hit)
+
+        # Proprioception: height, ambient temperature proxy, waste proxy
+        # Use nearby heat-bearing cells for ambient temp (same logic as WorldObservation)
+        heat_sum = 0.0
+        waste_sum = 0.0
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                nb_cell = self._cell_at((x0 + dx, y0 + dy))
+                if nb_cell in (CellType.RADIATION.value, CellType.ROCKY.value):
+                    heat_sum += 1.0
+                if nb_cell == CellType.TOXIN.value:
+                    waste_sum += 1.0
+        local_ambient_temp = min(1.0, heat_sum / 4.0)
+        local_waste_field = min(1.0, waste_sum / 4.0)
+        # Normalise height to [0, 1] over the range [0, 7]
+        height_norm = height_here / 7.0
+        proprio = [height_norm, local_ambient_temp, local_waste_field]
+
+        meta = {
+            "ray_count": self.ray_count,
+            "ray_range": self.ray_range,
+            "n_hit_types": len(HitType),
+            "n_proprio": len(proprio),
+            "agent_pos": list(pos),
+        }
+
+        return RawObservation(rays=rays, proprio=proprio, meta=meta)
+
+    def observe(
+        self,
+        agent_pos: tuple[int, int] | None = None,
+        other_agent_positions: list[tuple[int, int]] | None = None,
+    ) -> ObservationVector:
+        """Return an encoded :class:`ObservationVector` for the agent.
+
+        Parameters
+        ----------
+        agent_pos:
+            Override the current ``_agent_pos`` (multi-agent use).
+        other_agent_positions:
+            Positions of other living agents (for ``HitType.AGENT`` hits).
+
+        Returns
+        -------
+        ObservationVector
+            Encoded using ``self.obs_encoding`` (``"id"`` or ``"onehot"``).
+        """
+        raw = self.sense_raw(
+            agent_pos=agent_pos,
+            other_agent_positions=other_agent_positions,
+        )
+        if self.obs_encoding == "onehot":
+            return encode_onehot(raw)
+        return encode_id(raw)
 
     def _cell_at(self, pos: tuple[int, int]) -> str:
         x, y = pos

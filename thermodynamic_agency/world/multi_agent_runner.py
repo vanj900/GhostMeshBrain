@@ -347,6 +347,9 @@ class MultiAgentRunner:
         stressor_prob: float = 0.0,
         stressor_mode: str = "flat",
         stressor_intensity: float = 1.0,
+        obs_encoding: str = "id",
+        ray_count: int = 16,
+        ray_range: int = 6,
     ) -> None:
         self.n_agents = n_agents
         self.respawn = respawn
@@ -363,6 +366,9 @@ class MultiAgentRunner:
             height=world_height,
             seed=seed,
             allow_respawn=respawn,
+            obs_encoding=obs_encoding,
+            ray_count=ray_count,
+            ray_range=ray_range,
         )
 
         # Global event system shared by all agents

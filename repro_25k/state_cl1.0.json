@@ -1,0 +1,15 @@
+{
+  "energy": -0.12,
+  "heat": 0.1837205323590085,
+  "waste": 0.0406082129436034,
+  "integrity": 99.99916666666667,
+  "stability": 99.80000000000001,
+  "affect": -0.905023455711592,
+  "cortisol_proxy": 0.94,
+  "dopamine_proxy": 0.0,
+  "allostatic_load": 65.04106471801703,
+  "decide_streak": 0,
+  "last_action": "REST",
+  "entropy": 511,
+  "stage": "aware"
+}

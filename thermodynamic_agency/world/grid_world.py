@@ -1,6 +1,6 @@
 """GridWorld — a 2-D environment for embodied GhostMesh.
 
-A 10×10 (or larger) grid containing resources, terrain types, and hazards
+A 30×30 (or custom-sized) grid containing resources, terrain types, and hazards
 behind wall obstacles.  The agent navigates, gathers resources, and avoids
 hazards.  Resources respawn after a configurable number of ticks.
 
@@ -340,10 +340,12 @@ class GridWorld:
     Parameters
     ----------
     width, height:
-        Grid dimensions (default 10×10).
+        Grid dimensions (default 30×30).
     seed:
-        Optional RNG seed for reproducible layouts.  Each call to ``reset()``
-        generates a fresh random layout using this seed base + episode count.
+        Optional RNG seed for reproducible layouts.  The layout is generated
+        once from this seed on the first ``reset()`` call (or construction) and
+        remains fixed for the lifetime of the instance.  Subsequent resets only
+        re-randomize the agent's starting position and reset episode counters.
     wall_density:
         Fraction of interior cells that become walls (default 0.05).
     vision_radius:
@@ -366,8 +368,8 @@ class GridWorld:
 
     def __init__(
         self,
-        width: int = 10,
-        height: int = 10,
+        width: int = 30,
+        height: int = 30,
         seed: int | None = None,
         wall_density: float = 0.05,
         vision_radius: int = 2,
@@ -407,24 +409,45 @@ class GridWorld:
         self.obs_encoding: Literal["id", "onehot"] = obs_encoding
         self.ray_count: int = max(1, ray_count)
         self.ray_range: int = max(1, ray_range)
-        # Heightmap: generated (or re-generated) on each reset()
+        # Heightmap: generated once on first reset() and kept for the lifetime
+        # of this instance (persistent layout across episodes).
         self._heightmap: list[list[int]] = []
+        # Flag: True once the grid/heightmap have been generated.
+        self._layout_initialized: bool = False
         self.reset()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
     def reset(self) -> WorldObservation:
-        """Reset to a new random layout and return the initial observation."""
+        """Reset episode counters and agent position; keep the map layout intact.
+
+        The grid and heightmap are generated **once** on the first call
+        (i.e. when ``_layout_initialized`` is ``False``) and then preserved
+        for the lifetime of this instance.  Subsequent resets only:
+
+        * increment the episode counter,
+        * zero ``world_tick`` and ``_dwell_ticks``,
+        * reset the season to SPRING,
+        * clear any pending respawn timers, and
+        * re-randomize the agent's starting cell.
+
+        This means multiple training episodes share one persistent world layout
+        while the agent still starts from a fresh position each episode.
+        """
         self._world_tick = 0
         self._season_index = 0
         self._episode += 1
         self._respawn_timers.clear()
         self._dwell_ticks = 0
-        # Re-seed per episode for varied but reproducible layouts
-        if self._base_seed is not None:
-            self._rng = random.Random(self._base_seed + self._episode)
-        self._generate_grid()
-        self._generate_heightmap()
+
+        if not self._layout_initialized:
+            # Seed the RNG for layout generation (done only once).
+            if self._base_seed is not None:
+                self._rng = random.Random(self._base_seed)
+            self._generate_grid()
+            self._generate_heightmap()
+            self._layout_initialized = True
+
         self._agent_pos = self._random_empty_cell()
         return self._make_observation()
 
@@ -601,6 +624,24 @@ class GridWorld:
                 if cell in _GATHERABLE:
                     counts[cell] = counts.get(cell, 0) + 1
         return counts
+
+    def layout_signature(self) -> tuple[tuple[str, ...], ...]:
+        """Return an immutable snapshot of the current grid layout.
+
+        The snapshot captures only the *static* cell types (walls, terrain,
+        initial resource placement) and the heightmap, not the agent position.
+        It is intended for testing that the layout does **not** change across
+        ``reset()`` calls.
+
+        Returns
+        -------
+        tuple[tuple[str, ...], ...]
+            A nested tuple copy of ``_grid`` plus a nested tuple of ``_heightmap``
+            packed together as ``(grid_rows..., heightmap_rows...)``.
+        """
+        grid_snap = tuple(tuple(row) for row in self._grid)
+        hmap_snap = tuple(tuple(row) for row in self._heightmap)
+        return grid_snap + hmap_snap
 
     @property
     def world_pressure(self) -> float:

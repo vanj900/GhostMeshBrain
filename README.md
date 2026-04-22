@@ -696,7 +696,7 @@ thermodynamic_agency/
 │   ├── episodic_store.py    # Long-term episodic memory — similarity-based recall
 │   └── working_memory.py    # Short-term recency queue for immediate decision support
 ├── world/
-│   ├── grid_world.py        # 10×10 GridWorld with resources, hazards, and partial obs.
+│   ├── grid_world.py        # 30×30 GridWorld with resources, hazards, and partial obs.
 │   ├── episode_runner.py    # Multi-episode training harness (metabolic + world loops)
 │   └── multi_agent_runner.py # MultiAgentRunner — shared GridWorld with competition/cooperation
 ├── learning/
@@ -1058,7 +1058,7 @@ survival regulation and world interaction cleanly separated.
 
 ### GridWorld
 
-`world/grid_world.py` is a 10×10 (or larger) partially-observable grid.  The
+`world/grid_world.py` is a 30×30 (default) partially-observable grid.  The
 agent sees a 5×5 neighbourhood (radius 2) and navigates with six core actions:
 
 | Action | Effect |

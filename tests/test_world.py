@@ -257,3 +257,59 @@ class TestGridWorldEpisodes:
         assert world.world_tick == 10
         world.reset()
         assert world.world_tick == 0
+
+
+class TestPersistentLayout:
+    """Verify that the map layout (grid + heightmap) does not change across resets."""
+
+    def test_layout_signature_stable_across_resets(self):
+        world = GridWorld(seed=7)
+        sig1 = world.layout_signature()
+        world.reset()
+        sig2 = world.layout_signature()
+        world.reset()
+        sig3 = world.layout_signature()
+        assert sig1 == sig2 == sig3, "Layout must be identical across reset() calls"
+
+    def test_grid_stable_across_resets(self):
+        world = GridWorld(seed=13)
+        grid_before = [row[:] for row in world._grid]
+        world.reset()
+        grid_after = [row[:] for row in world._grid]
+        assert grid_before == grid_after, "Grid must not regenerate on reset()"
+
+    def test_heightmap_stable_across_resets(self):
+        world = GridWorld(seed=17)
+        hm_before = [row[:] for row in world._heightmap]
+        world.reset()
+        hm_after = [row[:] for row in world._heightmap]
+        assert hm_before == hm_after, "Heightmap must not regenerate on reset()"
+
+    def test_agent_position_rerandomized_on_reset(self):
+        """The agent always lands on an EMPTY cell after reset."""
+        world = GridWorld(seed=21)
+        for _ in range(20):
+            world.reset()
+            pos = world.agent_position
+            # Agent must always land on a valid (non-wall) empty cell.
+            assert world.cell_at(pos) == CellType.EMPTY.value
+
+    def test_default_size_is_30x30(self):
+        world = GridWorld()
+        assert world.width == 30
+        assert world.height == 30
+
+    def test_episode_runner_default_size_is_30x30(self):
+        from thermodynamic_agency.world.episode_runner import EpisodeRunner
+        runner = EpisodeRunner()
+        assert runner.world.width == 30
+        assert runner.world.height == 30
+
+    def test_layout_initialized_flag(self):
+        world = GridWorld(seed=99)
+        assert world._layout_initialized is True
+        sig_before = world.layout_signature()
+        world.reset()
+        # Flag stays True and layout unchanged
+        assert world._layout_initialized is True
+        assert world.layout_signature() == sig_before

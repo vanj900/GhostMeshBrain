@@ -65,6 +65,7 @@ from typing import Literal, Optional
 
 from thermodynamic_agency.world.observation import (
     HitType,
+    RayHit,
     RawObservation,
     ObservationVector,
     encode_id,
@@ -207,6 +208,11 @@ _SEASON_AFFECTED_CELLS: frozenset[str] = frozenset(
 _SCARCITY_SCALING_FACTOR: float = 8.0
 # Normalises the resource_decay_rate × world_tick product into [0, 1] range.
 _DECAY_PRESSURE_SCALING: float = 0.1
+
+# Ray occlusion: a cell is treated as an impassable ridge (blocks further rays)
+# when its height exceeds the agent's height by more than this threshold.
+# A value of 2 means a 3-level height jump creates a solid occlusion boundary.
+_RIDGE_OCCLUSION_THRESHOLD: int = 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -794,8 +800,6 @@ class GridWorld:
             ``ray_count`` :class:`RayHit` objects plus a proprioceptive
             vector ``[height_here, local_ambient_temp, local_waste_field]``.
         """
-        from thermodynamic_agency.world.observation import RayHit  # local to avoid circular at module level
-
         pos = agent_pos if agent_pos is not None else self._agent_pos
         x0, y0 = pos
         height_here = self._height_at(pos)
@@ -830,8 +834,8 @@ class GridWorld:
                 h = self._height_at(cell_pos)
                 dh = h - height_here
 
-                # Occlusion: ridge blocking (cell is significantly higher than agent)
-                ridge_blocked = dh > 2
+                # Occlusion: ray stops when it hits a ridge taller than the threshold
+                ridge_blocked = dh > _RIDGE_OCCLUSION_THRESHOLD
 
                 if cell == CellType.WALL.value or ridge_blocked:
                     hit = RayHit(hit_type=HitType.WALL, dist=step, dh=dh)

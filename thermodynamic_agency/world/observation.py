@@ -130,7 +130,7 @@ class ObservationVector:
         """Return the observation as a plain Python list of floats."""
         return list(self.vector)
 
-    def as_numpy(self, dtype: "type" = None):
+    def as_numpy(self, dtype=None):
         """Return the observation as a NumPy ``float32`` array.
 
         Parameters

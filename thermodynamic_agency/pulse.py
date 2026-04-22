@@ -630,7 +630,7 @@ class GhostMesh:
         # snapshot can both be included in the same record.
         _sm_approved = self_mod_result.approved_count if self_mod_result else 0
         _sm_blocked = self_mod_result.blocked_count if self_mod_result else 0
-        self._write_vitals_log(action, env_event, _sm_approved, _sm_blocked)
+        self._write_vitals_log(action, env_event, _sm_approved, _sm_blocked, stressor_event)
 
         # Log this tick
         self.run_logger.record(
@@ -1510,6 +1510,7 @@ class GhostMesh:
         env_event,
         self_mod_approved: int = 0,
         self_mod_blocked: int = 0,
+        stressor_event: str = "",
     ) -> None:
         """Append one JSON-lines record to the vitals log (if enabled)."""
         if not self._vitals_log:
@@ -1542,6 +1543,7 @@ class GhostMesh:
             "decide_streak": s.decide_streak,
             "self_mod_approved": self_mod_approved,
             "self_mod_blocked": self_mod_blocked,
+            "stressor_event": stressor_event,
         }
         # Append phase-transition probe signals when a snapshot is available
         if self._last_collapse_snapshot is not None:

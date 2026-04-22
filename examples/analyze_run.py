@@ -322,7 +322,10 @@ def main(argv: list[str] | None = None) -> None:
         description="Analyze a GhostMesh JSONL run log",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("log_file", help="Path to JSONL log produced by stress_test.py")
+    parser.add_argument(
+        "log_file", nargs="+",
+        help="Path(s) to JSONL log(s) produced by stress_test.py (glob patterns are supported via shell expansion)",
+    )
     parser.add_argument(
         "--output", type=str, default=None,
         help="Directory to save plot PNG (requires matplotlib)",
@@ -333,11 +336,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    if not os.path.exists(args.log_file):
-        print(f"Error: log file not found: {args.log_file}", file=sys.stderr)
-        sys.exit(1)
+    records: list[dict] = []
+    for path in args.log_file:
+        if not os.path.exists(path):
+            print(f"Error: log file not found: {path}", file=sys.stderr)
+            sys.exit(1)
+        records.extend(load_records(path))
 
-    records = load_records(args.log_file)
     print_text_summary(records)
 
     if not args.no_plot:

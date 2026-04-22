@@ -322,6 +322,15 @@ class MultiAgentRunner:
         Default tick limit when calling ``run()``.
     world_width, world_height:
         Grid dimensions.
+    stressor_prob:
+        Per-tick probability (0–1) of an environmental stressor firing for
+        each agent.  0.0 disables stressors (default).  Equivalent to
+        ``GHOST_STRESSOR_PROB`` for single-agent runs.
+    stressor_mode:
+        Disturbance mode passed to each agent's ``EnvironmentStressor``:
+        ``"flat"`` (default), ``"bursty"``, or ``"hostile_windows"``.
+    stressor_intensity:
+        Magnitude scale for stressor events (default 1.0).
     """
 
     def __init__(
@@ -335,11 +344,17 @@ class MultiAgentRunner:
         storm_prob: float = 0.02,
         predator_prob: float = 0.015,
         drought_prob: float = 0.01,
+        stressor_prob: float = 0.0,
+        stressor_mode: str = "flat",
+        stressor_intensity: float = 1.0,
     ) -> None:
         self.n_agents = n_agents
         self.respawn = respawn
         self.max_ticks = max_ticks
         self._seed = seed
+        self._stressor_prob = stressor_prob
+        self._stressor_mode = stressor_mode
+        self._stressor_intensity = stressor_intensity
         self._tmp_dir = tempfile.mkdtemp(prefix="ghostmesh_multi_")
 
         # Shared arena — one GridWorld whose grid is the canonical truth.
@@ -413,6 +428,9 @@ class MultiAgentRunner:
             os.environ["GHOST_HUD"] = "0"
             os.environ["GHOST_PULSE"] = "0"
             os.environ["GHOST_ENV_EVENTS"] = "0"
+            os.environ["GHOST_STRESSOR_PROB"] = str(self._stressor_prob)
+            os.environ["GHOST_STRESSOR_MODE"] = self._stressor_mode
+            os.environ["GHOST_STRESSOR_INTENSITY"] = str(self._stressor_intensity)
 
             mesh = GhostMesh(seed=seed_i)
 

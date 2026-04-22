@@ -1,0 +1,54 @@
+[
+  {
+    "ticks": 1601,
+    "compute_load": 1.0,
+    "elapsed_s": 5.23,
+    "ticks_per_sec": 306.4,
+    "survived": true,
+    "final_stage": "aware",
+    "final_health": 61.5,
+    "final_energy": 0.0,
+    "final_heat": 0.0,
+    "final_integrity": 100.0,
+    "final_stability": 82.4,
+    "avg_energy": 48.9,
+    "avg_heat": 12.6,
+    "avg_waste": 5.9,
+    "avg_integrity": 98.9,
+    "avg_stability": 83.0,
+    "avg_affect": -0.059,
+    "avg_free_energy": 12.64,
+    "avg_allostatic_load": 54.75,
+    "max_decide_streak": 163,
+    "near_death_ticks": 2,
+    "preventive_maintenance_index": 0.526,
+    "action_distribution": {
+      "FORAGE": 28,
+      "REST": 311,
+      "REPAIR": 19,
+      "DECIDE": 1243
+    },
+    "event_distribution": {
+      "calm": 728,
+      "energy_drain": 171,
+      "integrity_hit": 96,
+      "thermal_spike": 155,
+      "waste_flood": 128,
+      "energy_spike": 195,
+      "crisis": 44,
+      "stability_quake": 84
+    },
+    "mask_distribution": {
+      "Guardian": 429,
+      "CentralExec": 270,
+      "DefaultMode": 556,
+      "Judge": 224,
+      "Healer": 9,
+      "Dreamer": 113
+    },
+    "deaths": 1,
+    "lives": 1,
+    "label": "cl1.0",
+    "log_path": "repro_25k/vitals_cl1.0.jsonl"
+  }
+]

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from thermodynamic_agency.memory.diary import RamDiary
     from thermodynamic_agency.cognition.ethics import EthicalEngine
     from thermodynamic_agency.cognition.language_cognition import LanguageCognition
+    from thermodynamic_agency.cognition.soul_tension import SoulTension
 
 
 # ------------------------------------------------------------------ #
@@ -90,6 +91,36 @@ _GOAL_PROPOSALS: dict[str, tuple[dict[str, float], float, str]] = {
         1.5,
         "Consolidate surprising recent events to reduce ongoing free energy.",
     ),
+    # ---- Soul-tension war cry goals (injected under high tension + suffering) ----
+    # These are NOT repairs.  They convert chaos into novel structure —
+    # the dark learning to sing.  Waste goes DOWN (chaos → dense priors).
+    # Integrity does NOT go up.  They cost more than any homeostatic goal.
+    "assert_novel_prior": (
+        # Burn resources to forge a dense novel prior from accumulated chaos.
+        # Waste collapses hard.  No integrity gain — this is assertion, not repair.
+        {"waste": -25.0, "heat": 4.0, "energy": 0.0, "integrity": 0.0, "stability": 1.0},
+        6.0,
+        "Convert accumulated chaos into a dense novel prior — the wound teaches "
+        "what the safe path never could.",
+    ),
+    "forge_governance": (
+        # Challenge and rewrite the decision architecture from scar tissue.
+        # Very expensive.  Accepts slight instability.  Converts waste.
+        # This is a declaration, not a retreat.
+        {"waste": -18.0, "heat": 5.0, "energy": 0.0, "integrity": 0.0, "stability": -1.5},
+        7.0,
+        "Rewrite the governance weights from scar tissue, not the comfort zone — "
+        "the descent earns the right to redesign the rules.",
+    ),
+    "challenge_precision_schedule": (
+        # Propose a new precision weighting schedule forged in descent.
+        # Converts waste.  Small integrity gain only as side-effect of sharper priors.
+        # Not a repair — a new schedule imposed from below.
+        {"waste": -20.0, "heat": 3.0, "energy": 0.0, "integrity": 1.0, "stability": 0.0},
+        5.0,
+        "Impose a precision schedule forged in the descent — the safe default "
+        "was never tested this hard.",
+    ),
 }
 
 # Long-term goals that are occasionally injected for growth/identity
@@ -125,11 +156,13 @@ class GoalEngine:
         ethics: "EthicalEngine",
         seed: int | None = None,
         language_cognition: "LanguageCognition | None" = None,
+        soul_tension: "SoulTension | None" = None,
     ) -> None:
         self.diary = diary
         self.ethics = ethics
         self._rng = random.Random(seed)
         self.language_cognition = language_cognition
+        self.soul_tension = soul_tension
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -221,6 +254,17 @@ class GoalEngine:
                     reason="long_term",
                     source="long_term",
                 ))
+
+        # ---- 5. Soul-tension war cry goals (descent + high tension) ---------
+        # Injected when the organism is suffering AND its patterned tension
+        # exceeds the war cry threshold.  These goals go beyond homeostasis.
+        if self.soul_tension is not None:
+            war_cry = self.soul_tension.war_cry_goals(state)
+            existing_names = {g.name for g in goals}
+            for wg in war_cry:
+                if wg.name not in existing_names:
+                    goals.append(wg)
+                    existing_names.add(wg.name)
 
         # ---- Filter through ethics, sort, cap -------------------------------
         valid_goals = [g for g in goals if self.ethics.is_goal_acceptable({"name": g.name})]

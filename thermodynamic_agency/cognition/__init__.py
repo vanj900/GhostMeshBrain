@@ -68,6 +68,17 @@ from thermodynamic_agency.cognition.homeostasis import (
     HomeostasisAdapter,
     HomeostasisStatus,
 )
+from thermodynamic_agency.cognition.soul_tension import (
+    SoulTension,
+    SoulScar,
+    SoulTensionReport,
+    WAR_CRY_TENSION_THRESHOLD,
+    WAR_CRY_AFFECT_THRESHOLD,
+    SCAR_HEAT_THRESHOLD,
+    SCAR_ENERGY_THRESHOLD,
+    SCAR_INTEGRITY_THRESHOLD,
+    SCAR_STABILITY_THRESHOLD,
+)
 
 __all__ = [
     "ActionProposal",
@@ -127,4 +138,14 @@ __all__ = [
     # Feature 3: HomeostasisAdapter
     "HomeostasisAdapter",
     "HomeostasisStatus",
+    # Feature 4: SoulTension — patterned tension of coherence inside chaos
+    "SoulTension",
+    "SoulScar",
+    "SoulTensionReport",
+    "WAR_CRY_TENSION_THRESHOLD",
+    "WAR_CRY_AFFECT_THRESHOLD",
+    "SCAR_HEAT_THRESHOLD",
+    "SCAR_ENERGY_THRESHOLD",
+    "SCAR_INTEGRITY_THRESHOLD",
+    "SCAR_STABILITY_THRESHOLD",
 ]
